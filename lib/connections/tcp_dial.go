@@ -83,7 +83,7 @@ func (tcpDialerFactory) New(opts config.OptionsConfiguration, tlsCfg *tls.Config
 			wanPriority:       opts.ConnectionPriorityTCPWAN,
 			allowsMultiConns:  true,
 		},
-		registry: dialRegistry(opts, registry),
+		registry: registry,
 	}
 }
 

@@ -144,18 +144,41 @@ func TestSweepTailnetConnections(t *testing.T) {
 	}
 }
 
-func TestListenOnlyDialsDoNotReuseListeners(t *testing.T) {
-	// Registry.Get falls back to any compatible socket, and in listen-only
-	// mode every listening socket is bound to a tailnet address.
-	listening := registry.New()
-	listening.Register("tcp", &net.TCPAddr{IP: net.ParseIP("100.64.0.1"), Port: 22000})
-	var opts config.OptionsConfiguration
-	if dialRegistry(opts, listening).Get("tcp", func(any) bool { return false }) == nil {
-		t.Error("without listen-only, dials should be able to reuse listening sockets")
+func TestListenOnlyKeepsListenersOutOfSharedRegistry(t *testing.T) {
+	// Dials and discovery announcements reuse sockets from the shared
+	// registry, falling back to any compatible one; in listen-only mode
+	// listening sockets are bound to tailnet addresses and must stay out.
+	cfg := config.New(protocol.LocalDeviceID)
+	cfg.Options.RawListenAddresses = []string{"tcp://0.0.0.0:0"}
+	cfg.Options.TailscaleListenOnly = true
+	wcfg := config.Wrap("", cfg, protocol.LocalDeviceID, events.NoopLogger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sup := suture.New("test", suture.Spec{PassThroughPanics: true})
+	sup.ServeBackground(ctx)
+	s := &service{
+		Supervisor:     sup,
+		cfg:            wcfg,
+		conns:          make(chan internalConn),
+		natService:     nat.NewService(protocol.LocalDeviceID, wcfg),
+		registry:       registry.New(),
+		lanChecker:     &lanChecker{wcfg},
+		tailnet:        fakeTailnet{addrs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}},
+		evLogger:       events.NoopLogger,
+		listeners:      make(map[string]genericListener),
+		listenerTokens: make(map[string]suture.ServiceToken),
 	}
-	opts.TailscaleListenOnly = true
-	if got := dialRegistry(opts, listening).Get("tcp", func(any) bool { return false }); got != nil {
-		t.Errorf("listen-only dial would reuse the tailnet-bound socket %v", got)
+	s.updateListeners(cfg)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for s.tailnetRegistry == nil || s.tailnetRegistry.Get("tcp", func(any) bool { return true }) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the listener did not register in the listen-only registry")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := s.registry.Get("tcp", func(any) bool { return true }); got != nil {
+		t.Errorf("listen-only listener registered %v in the shared registry", got)
 	}
 }
 

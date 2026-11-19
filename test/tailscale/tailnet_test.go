@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -412,5 +413,164 @@ func TestAddressReuse(t *testing.T) {
 	}
 	if out, _ := h.dockerErr("exec", a.container, "grep", "-c", "but the connection belongs to node", "/var/log/syncthing.log"); out == "0" || out == "" {
 		t.Error("node-a did not refuse the reused address for the bound device")
+	}
+}
+
+// listeners returns the addresses the node is actually listening on:
+// listeners that failed to bind report an error and are left out.
+func listeners(n *node) []string {
+	var status struct {
+		ConnectionServiceStatus map[string]struct {
+			Error *string `json:"error"`
+		} `json:"connectionServiceStatus"`
+	}
+	n.rest(http.MethodGet, "/rest/system/status", nil, &status)
+	var addrs []string
+	for uri, listener := range status.ConnectionServiceStatus {
+		if listener.Error == nil {
+			addrs = append(addrs, uri)
+		}
+	}
+	slices.Sort(addrs)
+	return addrs
+}
+
+// boundSockets returns the local addresses of the node's TCP listening
+// sockets and UDP sockets on port 22000, as the kernel reports them.
+func boundSockets(n *node) (tcp, udp []string) {
+	n.h.t.Helper()
+	for _, proto := range []string{"t", "u"} {
+		out := n.exec("netstat", "-lnW"+proto)
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 4 || !strings.HasSuffix(fields[3], ":22000") {
+				continue
+			}
+			host := strings.TrimSuffix(fields[3], ":22000")
+			if proto == "t" {
+				tcp = append(tcp, host)
+			} else {
+				udp = append(udp, host)
+			}
+		}
+	}
+	slices.Sort(tcp)
+	slices.Sort(udp)
+	return tcp, udp
+}
+
+func reachable(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// TestListenOnly: with tailscaleListenOnly the node listens on its tailnet
+// addresses only, and on nothing at all while tailscaled is down.
+func TestListenOnly(t *testing.T) {
+	h := newHarness(t, networkOnly)
+	tagged := h.authKey("tag:syncthing")
+	a := h.startNode("node-a", tagged)
+	b := h.startNode("node-b", tagged)
+	a.addDevice(b)
+	b.addDevice(a)
+	a.addFolder("shared", b)
+	b.addFolder("shared", a)
+	enableDiscovery(b)
+
+	// Start from live wildcard TCP and QUIC listeners, as by default.
+	a.modifyConfig(func(cfg *config.Configuration) {
+		cfg.Options.RawListenAddresses = []string{"tcp://0.0.0.0:22000", "quic://0.0.0.0:22000"}
+	})
+	waitFor(t, "node-a to listen on all interfaces", time.Minute, func() bool {
+		return slices.Equal(listeners(a), []string{"quic://0.0.0.0:22000", "tcp://0.0.0.0:22000"})
+	})
+
+	a.modifyConfig(func(cfg *config.Configuration) {
+		cfg.Options.TailscaleDiscoveryEnabled = true
+		cfg.Options.TailscaleListenOnly = true
+		// Also ask for a relay listener, which listen-only must drop.
+		cfg.Options.RawListenAddresses = []string{"tcp://0.0.0.0:22000", "quic://0.0.0.0:22000", "dynamic+https://relays.syncthing.net/endpoint"}
+		cfg.Options.RelaysEnabled = true
+	})
+
+	var want []string
+	for _, ip := range a.tailnetIPs() {
+		hostPort := net.JoinHostPort(ip, "22000")
+		want = append(want, "tcp://"+hostPort, "quic://"+hostPort)
+	}
+	slices.Sort(want)
+	waitFor(t, "node-a to listen on its tailnet addresses", time.Minute, func() bool {
+		return slices.Equal(listeners(a), want)
+	})
+	// The kernel must agree: TCP and UDP sockets on port 22000 exist on the
+	// tailnet addresses and nowhere else.
+	tailnetHosts := slices.Clone(a.tailnetIPs())
+	slices.Sort(tailnetHosts)
+	waitFor(t, "node-a's sockets to be bound to its tailnet addresses only", 2*time.Minute, func() bool {
+		tcp, udp := boundSockets(a)
+		return slices.Equal(tcp, tailnetHosts) && slices.Equal(udp, tailnetHosts)
+	})
+	// The listener on all interfaces stops asynchronously.
+	lan := net.JoinHostPort(a.lanIP(), "22000")
+	waitFor(t, "node-a to stop listening on its LAN address", 10*time.Second, func() bool {
+		return !reachable(lan)
+	})
+
+	// node-b only dials; the connection must reach node-a over the tailnet.
+	b.modifyConfig(func(cfg *config.Configuration) {
+		cfg.Options.RawListenAddresses = []string{""}
+	})
+	waitFor(t, "node-b to connect to node-a over the tailnet", time.Minute, func() bool {
+		_, ok := b.connectedTo(a)
+		return ok
+	})
+	conn, _ := b.connectedTo(a)
+	if host, _, _ := net.SplitHostPort(conn.Address); !slices.Contains(a.tailnetIPs(), host) {
+		t.Errorf("node-b reached node-a at %s, not a tailnet address", conn.Address)
+	}
+
+	// Outbound connections are not restricted: node-a still dials a peer
+	// that is only on the LAN, over QUIC, with its own socket rather than
+	// a tailnet-bound listening one.
+	k := h.startNode("node-k", "")
+	k.modifyConfig(func(cfg *config.Configuration) {
+		cfg.Options.RawListenAddresses = []string{"quic://0.0.0.0:22000"}
+		dev := cfg.Defaults.Device.Copy()
+		dev.DeviceID, dev.Name = a.id, "node-a"
+		cfg.Devices = append(cfg.Devices, dev)
+	})
+	a.modifyConfig(func(cfg *config.Configuration) {
+		dev := cfg.Defaults.Device.Copy()
+		dev.DeviceID, dev.Name, dev.Addresses = k.id, "node-k", []string{"quic://" + k.lanIP() + ":22000"}
+		cfg.Devices = append(cfg.Devices, dev)
+	})
+	waitFor(t, "node-a to dial node-k on the LAN over QUIC", 2*time.Minute, func() bool {
+		_, ok := a.connectedTo(k)
+		return ok
+	})
+
+	// Without tailscaled there is no tailnet address, so nothing listens;
+	// listen-only never falls back to all interfaces.
+	ips := a.tailnetIPs()
+	a.stopTailscaled()
+	waitFor(t, "node-a to stop listening", time.Minute, func() bool {
+		tcp, udp := boundSockets(a)
+		return len(listeners(a)) == 0 && len(tcp) == 0 && len(udp) == 0
+	})
+	time.Sleep(5 * time.Second)
+	if reachable(lan) {
+		t.Error("node-a listens on its LAN address while tailscaled is down")
+	}
+
+	a.restartTailscaled()
+	waitFor(t, "node-a to listen on its tailnet addresses again", 2*time.Minute, func() bool {
+		return slices.Equal(listeners(a), want)
+	})
+	if got := a.tailnetIPs(); !slices.Equal(got, ips) {
+		t.Errorf("node-a came back with tailnet addresses %v, had %v", got, ips)
 	}
 }

@@ -47,11 +47,13 @@ func NewService(id protocol.DeviceID, cfg config.Wrapper) *Service {
 
 func (s *Service) CommitConfiguration(_, to config.Configuration) bool {
 	s.mut.Lock()
-	if !s.enabled && to.Options.NATEnabled {
+	// Listening only on the tailnet means no port mappings on the router.
+	enable := to.Options.NATEnabled && !to.Options.TailscaleListenOnly
+	if !s.enabled && enable {
 		slog.Debug("Starting NAT service")
 		s.enabled = true
 		s.scheduleProcess()
-	} else if s.enabled && !to.Options.NATEnabled {
+	} else if s.enabled && !enable {
 		slog.Debug("Stopping NAT service")
 		s.enabled = false
 	}

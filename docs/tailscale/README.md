@@ -127,6 +127,29 @@ Syncthing never authorizes a connection that went through a proxy. If you set
 `no_proxy=100.64.0.0/10,fd7a:115c:a1e0::/48`, or bound devices cannot connect. Devices configured by hand are never affected. To turn a bound device
 into an ordinary one, clear its `tailnetNodeID` in the advanced settings.
 
+## Listening only on the tailnet
+
+Set `tailscaleListenOnly` to accept BEP connections only through the tailnet.
+
+### What changes
+
+- Each configured TCP or QUIC listener is bound to this node's tailnet
+  addresses instead of the configured host. The port stays the same, and
+  `tcp4`, `tcp6`, `quic4` and `quic6` keep their address family.
+- Relay listeners are dropped.
+- No NAT port mappings are requested.
+- The listeners follow the tailnet addresses as they change.
+
+### When there is no tailnet address
+
+While tailscaled is down or not logged in, nothing listens. Syncthing never
+falls back to all interfaces.
+
+### What still works
+
+Outgoing connections are not affected. Syncthing can still dial devices that
+are configured by hand at other addresses.
+
 ## End-to-end tests
 
 `test/tailscale` runs Syncthing on a real tailnet:

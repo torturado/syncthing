@@ -148,6 +148,8 @@ type Tailnet interface {
 	// Available reports whether the tailnet can be trusted now, and its
 	// outage epoch, which grows each time it stops being available.
 	Available() (epoch uint64, ok bool)
+	// Addresses returns our tailnet addresses; empty while unavailable.
+	Addresses() []netip.Addr
 	Updates() <-chan struct{}
 }
 
@@ -209,6 +211,7 @@ type service struct {
 	listenersMut   sync.RWMutex
 	listeners      map[string]genericListener
 	listenerTokens map[string]suture.ServiceToken
+	listenerCfg    config.Configuration // last configuration applied to the listeners
 
 	// Connections of devices bound to a tailnet node, by connection ID, and
 	// those whose re-check is running.
@@ -272,7 +275,7 @@ func NewService(cfg config.Wrapper, myID protocol.DeviceID, mdl Model, tlsCfg *t
 	service.Add(svcutil.AsService(service.handleHellos, fmt.Sprintf("%s/handleHellos", service)))
 	service.Add(service.natService)
 	if tailnet != nil {
-		service.Add(svcutil.AsService(service.recheckTailnetConnections, fmt.Sprintf("%s/recheckTailnetConnections", service)))
+		service.Add(svcutil.AsService(service.followTailnet, fmt.Sprintf("%s/followTailnet", service)))
 	}
 
 	svcutil.OnSupervisorDone(service.Supervisor, func() {
@@ -529,15 +532,18 @@ func (s *service) handleHellos(ctx context.Context) error {
 	}
 }
 
-// recheckTailnetConnections closes the connections of devices bound to a
-// tailnet node as soon as the tailnet stops vouching for them.
-func (s *service) recheckTailnetConnections(ctx context.Context) error {
+// followTailnet reacts to tailnet changes: it moves the listeners when our
+// tailnet addresses change in listen-only mode, and closes the connections
+// of devices bound to a tailnet node as soon as the tailnet stops vouching
+// for them.
+func (s *service) followTailnet(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-s.tailnet.Updates():
 		}
+		s.refreshTailnetListeners()
 		s.sweepTailnetConnections(ctx)
 	}
 }
@@ -1020,10 +1026,73 @@ func (s *service) CommitConfiguration(from, to config.Configuration) bool {
 	}
 
 	s.checkAndSignalConnectLoopOnUpdatedDevices(from, to)
+	s.updateListeners(to)
+	return true
+}
 
+// listenAddresses returns the listener URLs for the configuration. In
+// listen-only mode each TCP or QUIC listener is bound to our tailnet
+// addresses instead, and other listeners are dropped; with no tailnet
+// address nothing listens, rather than falling back to all interfaces.
+func (s *service) listenAddresses(cfg config.Configuration) []string {
+	addrs := cfg.Options.ListenAddresses()
+	if !cfg.Options.TailscaleListenOnly {
+		return addrs
+	}
+	var self []netip.Addr
+	if s.tailnet != nil {
+		self = s.tailnet.Addresses()
+	}
+	var bound []string
+	for _, addr := range addrs {
+		uri, err := url.Parse(addr)
+		if err != nil || uri.Port() == "" {
+			continue
+		}
+		family := ""
+		switch uri.Scheme {
+		case "tcp", "quic":
+		case "tcp4", "quic4":
+			family = "4"
+		case "tcp6", "quic6":
+			family = "6"
+		default:
+			continue
+		}
+		for _, ip := range self {
+			if family == "4" && !ip.Is4() || family == "6" && !ip.Is6() {
+				continue
+			}
+			u := *uri
+			u.Host = net.JoinHostPort(ip.String(), uri.Port())
+			bound = append(bound, u.String())
+		}
+	}
+	return stringutil.UniqueTrimmedStrings(bound)
+}
+
+// updateListeners starts and stops listeners to match the configuration.
+func (s *service) updateListeners(to config.Configuration) {
 	s.listenersMut.Lock()
+	defer s.listenersMut.Unlock()
+	s.listenerCfg = to
+	s.updateListenersLocked()
+}
+
+// refreshTailnetListeners follows a change of our tailnet addresses in
+// listen-only mode.
+func (s *service) refreshTailnetListeners() {
+	s.listenersMut.Lock()
+	defer s.listenersMut.Unlock()
+	if s.listenerCfg.Options.TailscaleListenOnly {
+		s.updateListenersLocked()
+	}
+}
+
+func (s *service) updateListenersLocked() {
+	to := s.listenerCfg
 	seen := make(map[string]struct{})
-	for _, addr := range to.Options.ListenAddresses() {
+	for _, addr := range s.listenAddresses(to) {
 		if addr == "" {
 			// We can get an empty address if there is an empty listener
 			// element in the config, indicating no listeners should be
@@ -1074,9 +1143,6 @@ func (s *service) CommitConfiguration(from, to config.Configuration) bool {
 			delete(s.listeners, addr)
 		}
 	}
-	s.listenersMut.Unlock()
-
-	return true
 }
 
 func (s *service) checkAndSignalConnectLoopOnUpdatedDevices(from, to config.Configuration) {

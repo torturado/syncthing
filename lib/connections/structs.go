@@ -20,6 +20,7 @@ import (
 
 	"github.com/syncthing/syncthing/lib/config"
 	"github.com/syncthing/syncthing/lib/connections/registry"
+	"github.com/syncthing/syncthing/lib/dialer"
 	"github.com/syncthing/syncthing/lib/nat"
 	"github.com/syncthing/syncthing/lib/osutil"
 	"github.com/syncthing/syncthing/lib/protocol"
@@ -89,6 +90,19 @@ func (t connType) Transport() string {
 	default:
 		return "unknown"
 	}
+}
+
+// isDirectTCP reports whether the connection is a TCP connection whose
+// addresses are those of its own socket: not relayed, and not dialed
+// through a proxy.
+func (c internalConn) isDirectTCP() bool {
+	if c.connType.Transport() != "tcp" {
+		return false
+	}
+	if tc, ok := c.tlsConn.(*tls.Conn); ok && dialer.IsProxied(tc.NetConn()) {
+		return false
+	}
+	return true
 }
 
 func newInternalConn(tc tlsConn, connType connType, isLocal bool, priority int) internalConn {

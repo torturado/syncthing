@@ -97,6 +97,12 @@ type Tailnet struct {
 	domain  string       // our tailnet's MagicDNS domain
 	peers   map[tailcfg.StableNodeID]*peer
 	probing int // probes in flight
+
+	// grantMut serializes configuration writes from tailnet answers;
+	// grantSeen holds, per device, when the answer last applied was asked
+	// for, so that an older answer never overwrites a newer one.
+	grantMut  sync.Mutex
+	grantSeen map[protocol.DeviceID]time.Time
 }
 
 type peer struct {
@@ -122,6 +128,7 @@ func newTailnet(cfg config.Wrapper, api localAPI, tlsCfg *tls.Config, port uint1
 		port:          port,
 		configChanged: make(chan struct{}, 1),
 		updates:       make(chan struct{}, 1),
+		grantSeen:     make(map[protocol.DeviceID]time.Time),
 	}
 }
 
@@ -189,6 +196,20 @@ func (t *Tailnet) watch(ctx context.Context) (connected bool, err error) {
 		}
 	}()
 
+	// Reconciling the configuration calls WhoIs and waits for configuration
+	// commits, so it runs beside the watch loop rather than in it.
+	reconcileNow := make(chan struct{}, 1)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-reconcileNow:
+				t.reconcile(ctx)
+			}
+		}
+	}()
+
 	probed := make(chan struct{}, 1)
 	ticker := time.NewTicker(refreshInterval)
 	defer ticker.Stop()
@@ -206,7 +227,10 @@ func (t *Tailnet) watch(ctx context.Context) (connected bool, err error) {
 			refresh = false
 		}
 		t.startProbes(ctx, probed)
-		t.reconcile(ctx)
+		select {
+		case reconcileNow <- struct{}{}:
+		default:
+		}
 
 		select {
 		case <-ctx.Done():
@@ -301,6 +325,11 @@ func tailnetDomain(fqdn string) string {
 }
 
 func (t *Tailnet) startProbes(ctx context.Context, probed chan<- struct{}) {
+	// Probe results serve discovery and enrollment only; checking devices
+	// that are already bound does not need them.
+	if opts := t.cfg.Options(); !opts.TailscaleDiscoveryEnabled && !opts.TailscaleAutoAcceptDevices {
+		return
+	}
 	now := time.Now()
 	t.mut.Lock()
 	defer t.mut.Unlock()

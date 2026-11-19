@@ -282,6 +282,20 @@ func TestAuthorization(t *testing.T) {
 			_, ok := a.connectedTo(d)
 			return ok
 		})
+
+		t.Run("a device whose key expires loses its connection", func(t *testing.T) {
+			start := time.Now()
+			h.expireNode(d)
+			waitFor(t, "node-a to drop node-d", time.Minute, func() bool {
+				_, ok := a.connectedTo(d)
+				return !ok
+			})
+			t.Logf("node-d was disconnected %v after its key expired", time.Since(start).Round(time.Millisecond))
+			time.Sleep(20 * time.Second)
+			if _, ok := a.connectedTo(d); ok {
+				t.Error("node-d connected again with an expired key")
+			}
+		})
 	})
 
 	t.Run("with tailscaled stopped, known devices keep working and no new one is accepted", func(t *testing.T) {
@@ -352,4 +366,45 @@ func tailnetErrored(n *node) bool {
 	}
 	n.rest(http.MethodGet, "/rest/system/status", nil, &status)
 	return status.DiscoveryStatus["tailscale"].Error != nil
+}
+
+// TestAddressReuse: a new node that receives an expelled node's tailnet
+// addresses, and even presents the expelled device's certificate, is not
+// treated as the expelled device.
+func TestAddressReuse(t *testing.T) {
+	// A /30 and a /126 with random allocation leave exactly one free
+	// address per family once a node is deleted, so the next node gets it.
+	h := newHarnessWithPrefixes(t, grantPolicy, "100.64.0.0/30", "fd7a:115c:a1e0::/126", "random")
+	approved := h.authKey("tag:syncthing", "tag:approved")
+	a := h.startNode("node-a", approved)
+	a.addFolder("shared")
+	enableAutoAccept(a)
+	b := h.startNode("node-b", approved)
+	enableAutoAccept(b)
+	waitFor(t, "node-a to connect to node-b", 2*time.Minute, func() bool {
+		_, ok := a.connectedTo(b)
+		return ok
+	})
+	bAddrs := b.tailnetIPs()
+
+	h.deleteNode(b)
+	waitFor(t, "node-a to drop node-b", time.Minute, func() bool {
+		_, ok := a.connectedTo(b)
+		return !ok
+	})
+	b.exec("pkill", "syncthing")
+
+	// node-c takes over node-b's addresses and its Syncthing identity.
+	c := h.startNodeWithIdentity("node-c", approved, b)
+	if got := c.tailnetIPs(); !slices.Equal(got, bAddrs) {
+		t.Fatalf("node-c got addresses %v, want node-b's %v", got, bAddrs)
+	}
+	enableAutoAccept(c)
+	time.Sleep(45 * time.Second)
+	if _, ok := a.connectedTo(b); ok {
+		t.Fatal("node-a accepted node-b's device from the node that reused its addresses")
+	}
+	if out, _ := h.dockerErr("exec", a.container, "grep", "-c", "but the connection belongs to node", "/var/log/syncthing.log"); out == "0" || out == "" {
+		t.Error("node-a did not refuse the reused address for the bound device")
+	}
 }

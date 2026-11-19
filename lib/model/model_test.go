@@ -341,6 +341,24 @@ func TestDeviceRename(t *testing.T) {
 	}
 }
 
+func TestTailnetDeviceKeepsTailnetName(t *testing.T) {
+	// A device bound to a tailnet node keeps the name the tailnet gave it,
+	// even when remote names are allowed to overwrite local ones.
+	rawCfg := config.New(device1)
+	rawCfg.Options.OverwriteRemoteDevNames = true
+	rawCfg.Devices = []config.DeviceConfiguration{{DeviceID: device1, Name: "laptop", TailnetNodeID: "n1"}}
+	cfg, cfgCancel := newConfigWrapper(rawCfg)
+	defer cfgCancel()
+	m := newModel(t, cfg, myID, nil)
+	m.ServeBackground()
+	defer cleanupModel(m)
+
+	m.AddConnection(newFakeConnection(device1, m), protocol.Hello{DeviceName: "impostor"})
+	if name := cfg.Devices()[device1].Name; name != "laptop" {
+		t.Errorf("tailnet device renamed to %q by its Hello", name)
+	}
+}
+
 // Adjusted copy of the original function for testing purposes
 func saveConfig(ffs fs.Filesystem, path string, cfg config.Configuration) error {
 	fd, err := ffs.Create(path)

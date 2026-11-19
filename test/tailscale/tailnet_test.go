@@ -533,6 +533,26 @@ func TestListenOnly(t *testing.T) {
 		t.Errorf("node-b reached node-a at %s, not a tailnet address", conn.Address)
 	}
 
+	// Outbound connections are not restricted: node-a still dials a peer
+	// that is only on the LAN, over QUIC, with its own socket rather than
+	// a tailnet-bound listening one.
+	k := h.startNode("node-k", "")
+	k.modifyConfig(func(cfg *config.Configuration) {
+		cfg.Options.RawListenAddresses = []string{"quic://0.0.0.0:22000"}
+		dev := cfg.Defaults.Device.Copy()
+		dev.DeviceID, dev.Name = a.id, "node-a"
+		cfg.Devices = append(cfg.Devices, dev)
+	})
+	a.modifyConfig(func(cfg *config.Configuration) {
+		dev := cfg.Defaults.Device.Copy()
+		dev.DeviceID, dev.Name, dev.Addresses = k.id, "node-k", []string{"quic://" + k.lanIP() + ":22000"}
+		cfg.Devices = append(cfg.Devices, dev)
+	})
+	waitFor(t, "node-a to dial node-k on the LAN over QUIC", 2*time.Minute, func() bool {
+		_, ok := a.connectedTo(k)
+		return ok
+	})
+
 	// Without tailscaled there is no tailnet address, so nothing listens;
 	// listen-only never falls back to all interfaces.
 	ips := a.tailnetIPs()

@@ -13,9 +13,22 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/syncthing/syncthing/lib/config"
+	"github.com/syncthing/syncthing/lib/connections/registry"
 	"github.com/syncthing/syncthing/lib/nat"
 	"github.com/syncthing/syncthing/lib/osutil"
 )
+
+// dialRegistry returns the registry of listening sockets that dials may
+// reuse. In listen-only mode those sockets are bound to tailnet addresses,
+// which cannot reach peers elsewhere, and there is no NAT traversal to help;
+// dials then get an empty registry and open sockets of their own.
+func dialRegistry(opts config.OptionsConfiguration, listening *registry.Registry) *registry.Registry {
+	if opts.TailscaleListenOnly {
+		return registry.New()
+	}
+	return listening
+}
 
 func fixupPort(uri *url.URL, defaultPort int) *url.URL {
 	copyURI := *uri

@@ -371,7 +371,13 @@ func (t *Tailnet) applyGrant(ctx context.Context, deviceID protocol.DeviceID, au
 		t.noteGrantLocked(deviceID, auth.asked)
 		return nil
 	}
+	var stale bool
 	w, err := t.cfg.Modify(func(cfg *config.Configuration) {
+		// An outage may have come while this change waited in the queue.
+		if !t.current(auth) {
+			stale = true
+			return
+		}
 		for i := range cfg.Devices {
 			if cfg.Devices[i].DeviceID == deviceID && cfg.Devices[i].TailnetNodeID == string(auth.nodeID) {
 				cfg.Devices[i].TailnetFolders = auth.folders
@@ -384,6 +390,9 @@ func (t *Tailnet) applyGrant(ctx context.Context, deviceID protocol.DeviceID, au
 		return fmt.Errorf("applying the tailnet grant: %w", err)
 	}
 	w.Wait()
+	if stale {
+		return errTailnetUnavailable
+	}
 	t.noteGrantLocked(deviceID, auth.asked)
 	slog.InfoContext(ctx, "Applied tailnet grant", deviceID.LogAttr(), slog.Any("folders", auth.folders))
 	return nil

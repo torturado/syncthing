@@ -163,6 +163,10 @@ Out of scope:
 
   Devices configured by hand, without a binding, behave exactly as without the
   integration.
+
+  As with any revocation, a message that the device sent before the change was
+  observed may still be processed. Closing does not wait for the BEP farewell,
+  and nothing sent after the change is accepted.
 - **R8. Limited privileges for tailnet devices.** An auto-added device is
   never an introducer, so it cannot add further devices.
 - **R9. Identity probes do not disclose anything.** To map a tagged peer to a

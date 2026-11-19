@@ -51,8 +51,13 @@ func (f *cachedFinder) Lookup(ctx context.Context, deviceID protocol.DeviceID) (
 		}
 	}
 
-	// Perform the actual lookup and cache the result.
+	// Perform the actual lookup and cache the result. With both cache times
+	// zero caching is disabled, and a stored result would only go stale in
+	// Cache().
 	addrs, err := f.Finder.Lookup(ctx, deviceID)
+	if f.cacheTime == 0 && f.negCacheTime == 0 {
+		return addrs, err
+	}
 	if err == nil {
 		slog.DebugContext(ctx, "Got finder result", "device", deviceID, "finder", f, "address", addrs)
 		f.cache.Set(deviceID, CacheEntry{

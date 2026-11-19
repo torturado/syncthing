@@ -37,6 +37,7 @@ import (
 	"github.com/syncthing/syncthing/lib/osutil"
 	"github.com/syncthing/syncthing/lib/protocol"
 	"github.com/syncthing/syncthing/lib/svcutil"
+	"github.com/syncthing/syncthing/lib/tailscale"
 	"github.com/syncthing/syncthing/lib/tlsutil"
 	"github.com/syncthing/syncthing/lib/upgrade"
 	"github.com/syncthing/syncthing/lib/ur"
@@ -275,11 +276,13 @@ func (a *App) startup() error {
 	addrLister := &lateAddressLister{}
 
 	connRegistry := registry.New()
-	discoveryManager := discover.NewManager(a.myID, a.cfg, a.cert, a.evLogger, addrLister, connRegistry)
+	tailnet := tailscale.New(a.cfg, tlsCfg)
+	discoveryManager := discover.NewManager(a.myID, a.cfg, a.cert, a.evLogger, addrLister, connRegistry, tailnet)
 	connectionsService := connections.NewService(a.cfg, a.myID, m, tlsCfg, discoveryManager, bepProtocolName, tlsDefaultCommonName, a.evLogger, connRegistry, keyGen)
 
 	addrLister.AddressLister = connectionsService
 
+	a.mainService.Add(tailnet)
 	a.mainService.Add(discoveryManager)
 	a.mainService.Add(connectionsService)
 

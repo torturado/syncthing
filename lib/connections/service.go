@@ -22,6 +22,7 @@ import (
 	"maps"
 	"math"
 	"net"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -134,10 +135,14 @@ type Tailnet interface {
 	// the socket. It may add the device to the configuration. It returns
 	// the tailnet node that authorizes the connection, if any; an error
 	// rejects the connection.
-	CheckConnection(ctx context.Context, deviceID protocol.DeviceID, local, remote net.Addr, direct bool) (node string, err error)
-	// CheckEstablished is called for established connections whenever
-	// Updates fires; an error closes the connection.
-	CheckEstablished(ctx context.Context, deviceID protocol.DeviceID, remote net.Addr) error
+	// established is when the connection's handshake completed.
+	CheckConnection(ctx context.Context, deviceID protocol.DeviceID, local, remote net.Addr, direct bool, established time.Time) (node string, err error)
+	// CheckEstablished is called after the Hello exchange of a connection
+	// that the tailnet authorized, and for established connections
+	// whenever Updates fires; an error closes the connection.
+	CheckEstablished(ctx context.Context, deviceID protocol.DeviceID, remote net.Addr, established time.Time) error
+	// NodeAddresses returns the tailnet addresses of a node of our tailnet.
+	NodeAddresses(node string) []netip.Addr
 	Updates() <-chan struct{}
 }
 
@@ -199,6 +204,8 @@ type service struct {
 	listenersMut   sync.RWMutex
 	listeners      map[string]genericListener
 	listenerTokens map[string]suture.ServiceToken
+
+	tailnetChecks sync.Map // connection ID -> struct{}, while a re-check runs
 }
 
 // NewService returns the connection service. tailnet may be nil, in which
@@ -311,7 +318,7 @@ func (s *service) handleConns(ctx context.Context) error {
 		_ = c.SetDeadline(time.Now().Add(20 * time.Second))
 		go func() {
 			if s.tailnet != nil {
-				node, err := s.tailnet.CheckConnection(ctx, remoteID, c.LocalAddr(), c.RemoteAddr(), c.isDirectTCP())
+				node, err := s.tailnet.CheckConnection(ctx, remoteID, c.LocalAddr(), c.RemoteAddr(), c.isDirectTCP(), c.establishedAt)
 				if err != nil {
 					slog.WarnContext(ctx, "Connection rejected by tailnet authorization", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slog.String("type", c.Type()), slogutil.Error(err))
 					c.Close()
@@ -325,6 +332,16 @@ func (s *service) handleConns(ctx context.Context) error {
 			incoming, err := protocol.ExchangeHello(c, outgoing)
 			// The timestamps are used to create the connection ID.
 			c.connectionID = newConnectionID(outgoing.Timestamp, incoming.Timestamp)
+
+			// The tailnet's answer may have changed during the Hello: ask
+			// again, which also applies the current grant before BEP starts.
+			if err == nil && c.tailnetNode != "" {
+				if err := s.tailnet.CheckEstablished(ctx, remoteID, c.RemoteAddr(), c.establishedAt); err != nil {
+					slog.WarnContext(ctx, "Connection rejected by tailnet authorization", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slog.String("type", c.Type()), slogutil.Error(err))
+					c.Close()
+					return
+				}
+			}
 
 			select {
 			case s.hellos <- &connWithHello{c, incoming, err, remoteID, remoteCert}:
@@ -437,18 +454,10 @@ func (s *service) handleHellos(ctx context.Context) error {
 		// A device bound to a tailnet node is only admitted on a connection
 		// that the tailnet authorized for that node; the device may have
 		// been added by another connection while this one was in its Hello.
-		// The tailnet is asked again, as its answer may have changed during
-		// the Hello.
-		if deviceCfg.TailnetNodeID != "" {
-			err := errors.New("the tailnet did not authorize the connection for the device's node")
-			if c.tailnetNode == deviceCfg.TailnetNodeID && s.tailnet != nil {
-				err = s.tailnet.CheckEstablished(ctx, remoteID, c.RemoteAddr())
-			}
-			if err != nil {
-				slog.WarnContext(ctx, "Connection rejected by tailnet authorization", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slog.Any("type", c.Type()), slogutil.Error(err))
-				c.Close()
-				continue
-			}
+		if deviceCfg.TailnetNodeID != "" && c.tailnetNode != deviceCfg.TailnetNodeID {
+			slog.WarnContext(ctx, "Connection rejected: the tailnet did not authorize it for the device's node", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slog.Any("type", c.Type()))
+			c.Close()
+			continue
 		}
 
 		// Verify the name on the certificate. By default we set it to
@@ -503,24 +512,27 @@ func (s *service) recheckTailnetConnections(ctx context.Context) error {
 			return ctx.Err()
 		case <-s.tailnet.Updates():
 		}
-		// Check every connection at once, so that one slow answer does not
-		// hold up the others.
-		var wg sync.WaitGroup
+		// Check every connection on its own, so that a slow answer or a
+		// slow configuration commit holds up neither the other connections
+		// nor the next update. A connection whose previous check is still
+		// running is skipped.
 		for _, dev := range s.cfg.RawCopy().Devices {
 			if dev.TailnetNodeID == "" {
 				continue
 			}
 			for _, conn := range s.connectionsForDevice(dev.DeviceID) {
-				wg.Go(func() {
-					if err := s.tailnet.CheckEstablished(ctx, dev.DeviceID, conn.RemoteAddr()); err != nil {
+				if _, running := s.tailnetChecks.LoadOrStore(conn.ConnectionID(), struct{}{}); running {
+					continue
+				}
+				go func() {
+					defer s.tailnetChecks.Delete(conn.ConnectionID())
+					if err := s.tailnet.CheckEstablished(ctx, dev.DeviceID, conn.RemoteAddr(), conn.EstablishedAt()); err != nil {
 						slog.InfoContext(ctx, "Closing connection no longer authorized by the tailnet", dev.DeviceID.LogAttr(), slogutil.Address(conn.RemoteAddr()), slogutil.Error(err))
-						// Closing waits for the connection to wind down.
-						go conn.Close(err)
+						conn.Close(err)
 					}
-				})
+				}()
 			}
 		}
-		wg.Wait()
 	}
 }
 
@@ -747,6 +759,11 @@ func (s *service) resolveDialTargets(ctx context.Context, now time.Time, cfg con
 			}
 		}
 
+		if deviceCfg.TailnetNodeID != "" && !s.isTailnetDialTarget(deviceCfg.TailnetNodeID, uri) {
+			s.setConnectionStatus(addr, errors.New("not a tailnet address of the device's node"))
+			continue
+		}
+
 		dialerFactory, err := getDialerFactory(cfg, uri)
 		if err != nil {
 			s.setConnectionStatus(addr, err)
@@ -787,6 +804,21 @@ func (s *service) resolveDialTargets(ctx context.Context, now time.Time, cfg con
 	}
 
 	return dialTargets
+}
+
+// isTailnetDialTarget reports whether uri is a TCP address of the tailnet
+// node. A device bound to that node is dialed there only: a connection by
+// any other path would fail its authorization, after possibly winning the
+// dial over the one that would pass.
+func (s *service) isTailnetDialTarget(node string, uri *url.URL) bool {
+	if s.tailnet == nil || !strings.HasPrefix(uri.Scheme, "tcp") {
+		return false
+	}
+	ip, err := netip.ParseAddr(uri.Hostname())
+	if err != nil {
+		return false
+	}
+	return slices.Contains(s.tailnet.NodeAddresses(node), ip.Unmap())
 }
 
 func (s *service) resolveDeviceAddrs(ctx context.Context, cfg config.DeviceConfiguration) []string {

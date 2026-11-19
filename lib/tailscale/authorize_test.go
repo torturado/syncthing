@@ -97,6 +97,11 @@ func newAuthorizingTailnet(t *testing.T, autoAccept bool) (*Tailnet, *fakeLocalA
 	tn := newTailnet(wrapper, api, nil, PeerPort)
 	tn.self = []netip.Addr{netip.MustParseAddr("100.64.0.1"), netip.MustParseAddr("fd7a:115c:a1e0::1")}
 	tn.domain = "tailnet.test"
+	tn.peers = map[tailcfg.StableNodeID]*peer{
+		"n2": {addrs: []netip.Addr{netip.MustParseAddr("100.64.0.2")}},
+		"n3": {addrs: []netip.Addr{netip.MustParseAddr("100.64.0.3")}},
+		"n4": {addrs: []netip.Addr{netip.MustParseAddr("100.64.0.4")}},
+	}
 	return tn, api, wrapper, manual
 }
 
@@ -114,7 +119,7 @@ func sharedWith(cfg config.Wrapper, id protocol.DeviceID) []string {
 // it authorized.
 func check(t *testing.T, tn *Tailnet, id protocol.DeviceID, local, remote net.Addr) (string, error) {
 	t.Helper()
-	return tn.CheckConnection(context.Background(), id, local, remote, true)
+	return tn.CheckConnection(context.Background(), id, local, remote, true, time.Now())
 }
 
 func TestCheckConnectionAddsAuthorizedDevice(t *testing.T) {
@@ -164,7 +169,7 @@ func TestCheckConnectionAddsAuthorizedDevice(t *testing.T) {
 	if _, err := check(t, tn, devX, ourTailnetAddr, node3Addr); err == nil {
 		t.Error("bound device accepted from another node")
 	}
-	if _, err := tn.CheckConnection(ctx, devX, ourTailnetAddr, node2Addr, false); err == nil {
+	if _, err := tn.CheckConnection(ctx, devX, ourTailnetAddr, node2Addr, false, time.Now()); err == nil {
 		t.Error("bound device accepted over a relay")
 	}
 	if _, err := check(t, tn, devX, ourTailnetAddr, &net.TCPAddr{IP: net.ParseIP("100.64.0.1"), Port: 40000}); err == nil {
@@ -188,7 +193,7 @@ func TestCheckConnectionAddsAuthorizedDevice(t *testing.T) {
 	if _, err := check(t, tn, devX, lanAddr, node2Addr); err == nil {
 		t.Error("bound device accepted on a non-tailnet address")
 	}
-	if node, err := tn.CheckConnection(ctx, devZ, ourTailnetAddr, node3Addr, false); err != nil || node != "" {
+	if node, err := tn.CheckConnection(ctx, devZ, ourTailnetAddr, node3Addr, false, time.Now()); err != nil || node != "" {
 		t.Errorf("CheckConnection over a relay = %q, %v; want no node", node, err)
 	}
 	if _, ok := cfg.Device(devZ); ok {
@@ -201,7 +206,7 @@ func TestCheckConnectionAddsAuthorizedDevice(t *testing.T) {
 
 	// The grant shrinks: the device stays, its folders follow the grant.
 	api.setWhoIs("100.64.0.2", granted("n2", "laptop", `{}`))
-	if err := tn.CheckEstablished(ctx, devX, node2Addr); err != nil {
+	if err := tn.CheckEstablished(ctx, devX, node2Addr, time.Now()); err != nil {
 		t.Errorf("device with a grant rejected: %v", err)
 	}
 	if got := sharedWith(cfg, devX); len(got) != 0 {
@@ -209,7 +214,7 @@ func TestCheckConnectionAddsAuthorizedDevice(t *testing.T) {
 	}
 	// The grant is removed: the connection must close.
 	api.setWhoIs("100.64.0.2", &apitype.WhoIsResponse{Node: &tailcfg.Node{StableID: "n2", Name: "n2.tailnet.test.", Tags: []string{PeerTag}}})
-	if err := tn.CheckEstablished(ctx, devX, node2Addr); err == nil {
+	if err := tn.CheckEstablished(ctx, devX, node2Addr, time.Now()); err == nil {
 		t.Error("established connection kept after the grant was removed")
 	}
 }
@@ -229,7 +234,7 @@ func TestCheckConnectionFailsClosed(t *testing.T) {
 	if _, err := check(t, tn, bound, ourTailnetAddr, node2Addr); err == nil {
 		t.Error("bound device accepted while the LocalAPI is unavailable")
 	}
-	if err := tn.CheckEstablished(ctx, bound, node2Addr); err == nil {
+	if err := tn.CheckEstablished(ctx, bound, node2Addr, time.Now()); err == nil {
 		t.Error("bound device kept while the LocalAPI is unavailable")
 	}
 	unknown := protocol.DeviceID{2}
@@ -324,5 +329,47 @@ func TestBoundDeviceStaysBound(t *testing.T) {
 	}
 	if got := sharedWith(cfg, bound); len(got) != 0 {
 		t.Errorf("an older answer shared %v again", got)
+	}
+}
+
+func TestAddressReuseKeepsBindings(t *testing.T) {
+	tn, api, cfg, _ := newAuthorizingTailnet(t, true)
+	api.setWhoIs("100.64.0.2", granted("n2", "laptop", `{"folders":["shared"]}`))
+	old, fresh := protocol.DeviceID{1}, protocol.DeviceID{2}
+	if _, err := check(t, tn, old, ourTailnetAddr, node2Addr); err != nil {
+		t.Fatal(err)
+	}
+
+	// While our peer table still says n2 but WhoIs already says n5, the
+	// address has changed hands and nothing is authorized.
+	api.setWhoIs("100.64.0.2", granted("n5", "tablet", `{"folders":["shared"]}`))
+	if node, err := check(t, tn, fresh, ourTailnetAddr, node2Addr); err != nil || node != "" {
+		t.Errorf("CheckConnection while the address changes hands = %q, %v; want no node", node, err)
+	}
+	if _, ok := cfg.Device(fresh); ok {
+		t.Error("device enrolled while its address was changing hands")
+	}
+
+	// Once the peer table agrees that the address belongs to n5, the old
+	// binding is refused from it and the new node's device can enroll.
+	tn.mut.Lock()
+	tn.peers = map[tailcfg.StableNodeID]*peer{"n5": {addrs: []netip.Addr{netip.MustParseAddr("100.64.0.2")}, since: time.Now()}}
+	tn.mut.Unlock()
+	// A connection established before the table learned of n5 may have come
+	// from the previous owner, and is not authorized.
+	if node, err := tn.CheckConnection(context.Background(), fresh, ourTailnetAddr, node2Addr, true, time.Now().Add(-time.Second)); err != nil || node != "" {
+		t.Errorf("CheckConnection for a connection older than the owner = %q, %v; want no node", node, err)
+	}
+	if _, ok := cfg.Device(fresh); ok {
+		t.Error("device enrolled on a connection older than its node's ownership of the address")
+	}
+	if _, err := check(t, tn, old, ourTailnetAddr, node2Addr); err == nil {
+		t.Error("the old device was accepted from its reused address")
+	}
+	if node, err := check(t, tn, fresh, ourTailnetAddr, node2Addr); err != nil || node != "n5" {
+		t.Errorf("CheckConnection for the new owner = %q, %v; want node n5", node, err)
+	}
+	if dev, ok := cfg.Device(fresh); !ok || dev.TailnetNodeID != "n5" {
+		t.Errorf("new owner's device = %+v, %v; want it bound to n5", dev, ok)
 	}
 }

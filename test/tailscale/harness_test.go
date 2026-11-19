@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -36,7 +37,7 @@ const (
 	apiKey         = "tailnet-e2e"
 )
 
-var syncthingBinary, localAPIProxyBinary string
+var syncthingBinary, localAPIProxyBinary, derperBinary string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "syncthing-tailnet-e2e")
@@ -61,6 +62,17 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "building localapiproxy:", err)
 		os.Exit(1)
 	}
+	// The DERP relay, built outside this module from the same Tailscale
+	// release as the node image.
+	install := exec.Command("go", "install", "tailscale.com/cmd/derper@"+strings.TrimPrefix(tailscaleImage, "tailscale/tailscale:"))
+	install.Dir = dir
+	install.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOBIN="+dir, "GOFLAGS=-mod=mod")
+	install.Stdout, install.Stderr = os.Stderr, os.Stderr
+	if err := install.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "building derper:", err)
+		os.Exit(1)
+	}
+	derperBinary = filepath.Join(dir, "derper")
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
@@ -75,6 +87,7 @@ type harness struct {
 	network string
 	control string
 	userID  string
+	tailnet []*node // nodes started on the tailnet
 }
 
 // headscaleConfig is formatted with the IPv4 and IPv6 prefixes and the
@@ -108,18 +121,21 @@ dns:
   override_local_dns: false
 `
 
-// Nodes share one Docker bridge and reach each other directly, so the DERP
-// map only has to satisfy Headscale's requirement for one region.
+// The tailnet has its own DERP relay, as every real tailnet does, so that
+// nodes can talk while their direct paths are set up. It serves plain HTTP,
+// which the clients accept for nodes marked forcehttp.
 const derpMap = `regions:
   900:
     regionid: 900
-    regioncode: none
-    regionname: Unreachable placeholder
+    regioncode: test
+    regionname: Test DERP
     nodes:
       - name: 900a
         regionid: 900
-        hostname: derp.invalid
-        stunport: -1
+        hostname: derper
+        derpport: 3340
+        stunport: 3478
+        forcehttp: true
 `
 
 // nodeScript starts tailscaled with a kernel TUN device, joins the tailnet
@@ -168,6 +184,9 @@ func newHarnessWithPrefixes(t *testing.T, policy, v4, v6, allocation string) *ha
 
 	h.docker("network", "create", h.network)
 	t.Cleanup(h.cleanup)
+	h.docker("run", "-d", "--name", h.prefix+"-derper", "--network", h.network, "--network-alias", "derper",
+		"-v", derperBinary+":/usr/local/bin/derper:ro",
+		"--entrypoint", "/usr/local/bin/derper", tailscaleImage, "-a", ":3340", "-http-port", "-1", "-stun-port", "3478")
 	h.docker("run", "-d", "--name", h.control, "--network", h.network, "--network-alias", "headscale",
 		"-v", filepath.Join(h.dir, "config.yaml")+":/etc/headscale/config.yaml:ro",
 		"-v", filepath.Join(h.dir, "derp.yaml")+":/etc/headscale/derp.yaml:ro",
@@ -262,11 +281,12 @@ func (h *harness) authKey(tags ...string) string {
 
 // node is one tailnet node running tailscaled and Syncthing.
 type node struct {
-	h         *harness
-	name      string
-	container string
-	api       string
-	id        protocol.DeviceID
+	h          *harness
+	name       string
+	container  string
+	api        string
+	id         protocol.DeviceID
+	offTailnet bool // expelled, expired or without tailscaled
 }
 
 func (h *harness) startNode(name, authKey string) *node {
@@ -304,11 +324,27 @@ func (h *harness) startNodeSeeded(name, authKey, seed string) *node {
 	h.docker(append(args, "--entrypoint", "sh", tailscaleImage, "/node.sh")...)
 	h.t.Cleanup(func() {
 		if h.t.Failed() {
-			out, _ := h.dockerErr("exec", n.container, "sh", "-c", "tail -n 80 /var/log/syncthing.log; echo ---; tail -n 30 /var/log/tailscaled.log")
+			out, _ := h.dockerErr("exec", n.container, "sh", "-c", "tail -n 200 /var/log/syncthing.log; echo ---; tail -n 30 /var/log/tailscaled.log")
 			h.t.Logf("%s logs:\n%s", name, out)
 		}
 	})
 	n.api = h.docker("port", n.container, "8384/tcp")
+
+	// A new node reaches the others only once direct paths are set up and
+	// Headscale has pushed packet filters that include it, which can take a
+	// while; wait for TCP to the BEP port both ways, so that the tests
+	// measure Syncthing rather than the control plane.
+	if authKey != "" {
+		for _, other := range h.tailnet {
+			if other.offTailnet {
+				continue
+			}
+			waitFor(h.t, name+" and "+other.name+" to reach each other over the tailnet", 3*time.Minute, func() bool {
+				return n.reachesBEP(other) && other.reachesBEP(n)
+			})
+		}
+		h.tailnet = append(h.tailnet, n)
+	}
 
 	var status struct {
 		MyID protocol.DeviceID `json:"myID"`
@@ -347,12 +383,14 @@ func (n *node) lanIP() string {
 // deleteNode removes the node from the tailnet, as an admin expelling it.
 func (h *harness) deleteNode(n *node) {
 	h.t.Helper()
+	n.offTailnet = true
 	h.docker("exec", h.control, "headscale", "nodes", "delete", "-i", h.nodeID(n), "--force")
 }
 
 // expireNode expires the node's key, forcing it to authenticate again.
 func (h *harness) expireNode(n *node) {
 	h.t.Helper()
+	n.offTailnet = true
 	h.docker("exec", h.control, "headscale", "nodes", "expire", "-i", h.nodeID(n))
 }
 
@@ -406,6 +444,28 @@ func (n *node) exec(args ...string) string {
 func (n *node) tailnetIPs() []string {
 	n.h.t.Helper()
 	return strings.Fields(n.exec("tailscale", "--socket=/var/run/tailscale/real.sock", "ip"))
+}
+
+// reachesBEP reports whether the node can open a TCP connection to the
+// other node's BEP port over the tailnet.
+func (n *node) reachesBEP(other *node) bool {
+	addr := net.JoinHostPort(other.tailnetIPs()[0], "22000")
+	_, err := n.h.dockerErr("exec", n.container, "sh", "-c", "nc -w 2 "+addr+" </dev/null")
+	return err == nil
+}
+
+// stopTailscaled stops the node's tailscaled; restartTailscaled starts it
+// again with the same state.
+func (n *node) stopTailscaled() {
+	n.h.t.Helper()
+	n.offTailnet = true
+	n.exec("pkill", "tailscaled")
+}
+
+func (n *node) restartTailscaled() {
+	n.h.t.Helper()
+	n.offTailnet = false
+	n.exec("sh", "-c", tailscaledCommand+" &")
 }
 
 // cutLocalAPI makes the LocalAPI unreachable for Syncthing while tailscaled

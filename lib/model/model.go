@@ -1263,9 +1263,13 @@ func (m *model) ClusterConfig(conn protocol.Connection, cm *protocol.ClusterConf
 		w, _ := m.cfg.Modify(func(cfg *config.Configuration) {
 			changedFcfg := make(map[string]config.FolderConfiguration)
 			haveFcfg := cfg.FolderMap()
-			// The grant of a tailnet device may have changed since deviceCfg
-			// was read; the allowlist must be the current one.
-			current, _, _ := cfg.Device(deviceID)
+			// The device, and the grant of a tailnet device, may have
+			// changed since deviceCfg was read; what applies is the current
+			// configuration.
+			current, _, ok := cfg.Device(deviceID)
+			if !ok || !current.AutoAcceptFolders {
+				return
+			}
 			for _, folder := range cm.Folders {
 				if deviceCfg.IgnoredFolder(folder.ID) || !current.TailnetAllowsFolder(folder.ID) {
 					continue

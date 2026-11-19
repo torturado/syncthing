@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 
 	"github.com/syncthing/syncthing/lib/connections/registry"
@@ -92,6 +93,26 @@ func dialContextWithFallback(ctx context.Context, fallback proxy.ContextDialer, 
 	}
 
 	return dialTwicePreferFirst(ctx, proxyDialFudgeAddress, fallback.DialContext, "proxy", "fallback", network, addr)
+}
+
+// IsProxied reports whether conn was dialed through a proxy, in which case
+// its remote address is the requested destination rather than the peer of
+// the socket. A proxy dialer also returns direct connections, for hosts that
+// no_proxy exempts, so the socket's own peer decides.
+func IsProxied(conn net.Conn) bool {
+	dc, ok := conn.(dialerConn)
+	if !ok {
+		return false
+	}
+	requested, err := netip.ParseAddrPort(dc.addr.String())
+	if err != nil {
+		return true
+	}
+	actual, err := netip.ParseAddrPort(dc.Conn.RemoteAddr().String())
+	if err != nil {
+		return true
+	}
+	return netip.AddrPortFrom(requested.Addr().Unmap(), requested.Port()) != netip.AddrPortFrom(actual.Addr().Unmap(), actual.Port())
 }
 
 // DialContext dials via context and/or directly, depending on how it is configured.

@@ -10,12 +10,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
+	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +33,113 @@ import (
 	"github.com/syncthing/syncthing/lib/protocol"
 	"github.com/syncthing/syncthing/lib/tlsutil"
 )
+
+type fakeTailnet struct {
+	nodes       map[string][]netip.Addr
+	epoch       uint64
+	unavailable bool
+}
+
+func (fakeTailnet) CheckConnection(context.Context, protocol.DeviceID, net.Addr, net.Addr, bool, time.Time) (string, error) {
+	return "", nil
+}
+
+func (fakeTailnet) CheckEstablished(context.Context, protocol.DeviceID, net.Addr, time.Time) error {
+	return nil
+}
+
+func (f fakeTailnet) NodeAddresses(node string) []netip.Addr { return f.nodes[node] }
+
+func (f fakeTailnet) Available() (uint64, bool) { return f.epoch, !f.unavailable }
+
+func (fakeTailnet) Updates() <-chan struct{} { return nil }
+
+func TestTailnetDialTargets(t *testing.T) {
+	s := &service{tailnet: fakeTailnet{nodes: map[string][]netip.Addr{"n1": {netip.MustParseAddr("100.64.0.2"), netip.MustParseAddr("fd7a:115c:a1e0::2")}}}}
+	for addr, want := range map[string]bool{
+		"tcp://100.64.0.2:22000":            true,
+		"tcp://[fd7a:115c:a1e0::2]:22000":   true,
+		"tcp4://100.64.0.2:22000":           true,
+		"quic://100.64.0.2:22000":           false, // not TCP
+		"tcp://192.168.1.5:22000":           false, // not the node
+		"tcp://100.64.0.3:22000":            false, // another node
+		"relay://100.64.0.2:22067/?id=XXXX": false,
+	} {
+		uri, err := url.Parse(addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := s.isTailnetDialTarget("n1", uri); got != want {
+			t.Errorf("isTailnetDialTarget(%s) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+func TestTailnetAdmission(t *testing.T) {
+	dev := config.DeviceConfiguration{DeviceID: protocol.DeviceID{1}, TailnetNodeID: "n1"}
+	authorized := internalConn{tailnetNode: "n1", tailnetEpoch: 3}
+	for name, tc := range map[string]struct {
+		tailnet fakeTailnet
+		conn    internalConn
+		want    bool
+	}{
+		"authorized, no outage since":   {fakeTailnet{epoch: 3}, authorized, true},
+		"an outage came in between":     {fakeTailnet{epoch: 4}, authorized, false},
+		"unavailable now":               {fakeTailnet{epoch: 3, unavailable: true}, authorized, false},
+		"authorized for another node":   {fakeTailnet{epoch: 3}, internalConn{tailnetNode: "n2", tailnetEpoch: 3}, false},
+		"not authorized by the tailnet": {fakeTailnet{epoch: 3}, internalConn{}, false},
+	} {
+		if got := (&service{tailnet: tc.tailnet}).tailnetAdmits(dev, tc.conn); got != tc.want {
+			t.Errorf("%s: tailnetAdmits = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestBoundDeviceDialsItsNode(t *testing.T) {
+	// Without Tailscale discovery, a bound device is still dialed at its
+	// node's tailnet addresses.
+	s := &service{tailnet: fakeTailnet{nodes: map[string][]netip.Addr{"n1": {netip.MustParseAddr("100.64.0.2"), netip.MustParseAddr("fd7a:115c:a1e0::2")}}}}
+	dev := config.DeviceConfiguration{DeviceID: protocol.DeviceID{1}, Addresses: []string{"dynamic"}, TailnetNodeID: "n1"}
+	got := s.resolveDeviceAddrs(context.Background(), dev)
+	slices.Sort(got)
+	if want := []string{"tcp://100.64.0.2:22000", "tcp://[fd7a:115c:a1e0::2]:22000"}; !slices.Equal(got, want) {
+		t.Errorf("addresses %v, want %v", got, want)
+	}
+}
+
+func TestSweepTailnetConnections(t *testing.T) {
+	bound, unbound := protocol.DeviceID{1}, protocol.DeviceID{2}
+	cfg := config.New(protocol.LocalDeviceID)
+	cfg.Devices = append(cfg.Devices,
+		config.DeviceConfiguration{DeviceID: bound, TailnetNodeID: "n1"},
+		config.DeviceConfiguration{DeviceID: unbound},
+	)
+	s := &service{
+		cfg:     config.Wrap("", cfg, protocol.LocalDeviceID, events.NoopLogger),
+		tailnet: fakeTailnet{epoch: 4},
+	}
+	stale := &closeRecordingConn{closed: make(chan struct{})}
+	cleared := &closeRecordingConn{closed: make(chan struct{})}
+	s.tailnetConns.Store("stale", tailnetConn{deviceID: bound, conn: internalConn{tlsConn: stale, tailnetEpoch: 3}})
+	// The device's binding was cleared: it is an ordinary connection now.
+	s.tailnetConns.Store("cleared", tailnetConn{deviceID: unbound, conn: internalConn{tlsConn: cleared, tailnetEpoch: 3}})
+
+	s.sweepTailnetConnections(context.Background())
+
+	select {
+	case <-stale.closed:
+	case <-time.After(5 * time.Second):
+		t.Error("a connection authorized before the outage was not closed")
+	}
+	select {
+	case <-cleared.closed:
+		t.Error("the connection of a device that is no longer bound was closed")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, ok := s.tailnetConns.Load("cleared"); ok {
+		t.Error("a device that is no longer bound is still tracked")
+	}
+}
 
 func TestFixupPort(t *testing.T) {
 	cases := [][2]string{
@@ -500,4 +610,69 @@ func mustGetCert(b interface{ Fatal(...any) }) tls.Certificate {
 		b.Fatal(err)
 	}
 	return cert
+}
+
+// admissionModel accepts every Hello and records admitted connections; the
+// other Model methods are not reached by the tests that use it.
+type admissionModel struct {
+	Model
+	added chan protocol.DeviceID
+}
+
+func (admissionModel) OnHello(protocol.DeviceID, net.Addr, protocol.Hello) error { return nil }
+
+func (m admissionModel) AddConnection(conn protocol.Connection, _ protocol.Hello) {
+	m.added <- conn.DeviceID()
+}
+
+type closeRecordingConn struct {
+	tlsConn
+	closed chan struct{}
+}
+
+func (c *closeRecordingConn) Close() error {
+	close(c.closed)
+	return nil
+}
+
+func (*closeRecordingConn) SetDeadline(time.Time) error { return nil }
+
+func (*closeRecordingConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (*closeRecordingConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22000}
+}
+
+func TestHandleHellosRequiresTailnetNodeForBoundDevice(t *testing.T) {
+	// A device bound to a tailnet node, for instance added by another
+	// connection while this one exchanged Hellos, is not admitted on a
+	// connection that the tailnet did not authorize for that node.
+	bound := protocol.DeviceID{1}
+	cfg := config.New(protocol.LocalDeviceID)
+	cfg.Devices = append(cfg.Devices, config.DeviceConfiguration{DeviceID: bound, TailnetNodeID: "n1"})
+	mdl := admissionModel{added: make(chan protocol.DeviceID, 1)}
+	s := &service{
+		cfg:                  config.Wrap("", cfg, protocol.LocalDeviceID, events.NoopLogger),
+		model:                mdl,
+		hellos:               make(chan *connWithHello),
+		tlsDefaultCommonName: "syncthing",
+	}
+	cert := mustGetCert(t)
+	remoteCert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.handleHellos(ctx)
+
+	conn := &closeRecordingConn{closed: make(chan struct{})}
+	s.hellos <- &connWithHello{c: internalConn{tlsConn: conn, connType: connTypeTCPServer}, remoteID: bound, remoteCert: remoteCert}
+	select {
+	case <-conn.closed:
+	case <-mdl.added:
+		t.Fatal("bound device admitted on a connection the tailnet did not authorize")
+	case <-time.After(5 * time.Second):
+		t.Fatal("connection neither closed nor admitted")
+	}
 }

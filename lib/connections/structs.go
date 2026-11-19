@@ -20,6 +20,7 @@ import (
 
 	"github.com/syncthing/syncthing/lib/config"
 	"github.com/syncthing/syncthing/lib/connections/registry"
+	"github.com/syncthing/syncthing/lib/dialer"
 	"github.com/syncthing/syncthing/lib/nat"
 	"github.com/syncthing/syncthing/lib/osutil"
 	"github.com/syncthing/syncthing/lib/protocol"
@@ -45,6 +46,14 @@ type internalConn struct {
 	priority      int
 	establishedAt time.Time
 	connectionID  string // set after Hello exchange
+
+	// Set for TCP connections only: when the connection was opened, before
+	// its TLS handshake.
+	handshakeStarted time.Time
+	// The tailnet node that authorized this connection, if any, and the
+	// tailnet's outage epoch when it was checked.
+	tailnetNode  string
+	tailnetEpoch uint64
 }
 
 type connType int
@@ -88,6 +97,19 @@ func (t connType) Transport() string {
 	default:
 		return "unknown"
 	}
+}
+
+// isDirectTCP reports whether the connection is a TCP connection whose
+// addresses are those of its own socket: not relayed, and not dialed
+// through a proxy.
+func (c internalConn) isDirectTCP() bool {
+	if c.connType.Transport() != "tcp" {
+		return false
+	}
+	if tc, ok := c.tlsConn.(*tls.Conn); ok && dialer.IsProxied(tc.NetConn()) {
+		return false
+	}
+	return true
 }
 
 func newInternalConn(tc tlsConn, connType connType, isLocal bool, priority int) internalConn {

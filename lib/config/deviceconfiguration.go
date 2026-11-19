@@ -37,6 +37,12 @@ type DeviceConfiguration struct {
 	RemoteGUIPort            int               `json:"remoteGUIPort" xml:"remoteGUIPort"`
 	RawNumConnections        int               `json:"numConnections" xml:"numConnections"`
 	Group                    string            `json:"group" xml:"group,attr,omitempty"`
+	// Set on devices that were added because the tailnet authorized them:
+	// the StableNodeID of their tailnet node and the folders the grant
+	// lists. Such a device is only allowed to connect from that node, while
+	// the node holds the grant. See docs/tailscale/threat-model.md.
+	TailnetNodeID  string   `json:"tailnetNodeID" xml:"tailnetNodeID,attr,omitempty"`
+	TailnetFolders []string `json:"tailnetFolders" xml:"tailnetFolder,omitempty"`
 }
 
 func (cfg DeviceConfiguration) Copy() DeviceConfiguration {
@@ -47,7 +53,15 @@ func (cfg DeviceConfiguration) Copy() DeviceConfiguration {
 	copy(c.AllowedNetworks, cfg.AllowedNetworks)
 	c.IgnoredFolders = make([]ObservedFolder, len(cfg.IgnoredFolders))
 	copy(c.IgnoredFolders, cfg.IgnoredFolders)
+	c.TailnetFolders = slices.Clone(cfg.TailnetFolders)
 	return c
+}
+
+// TailnetAllowsFolder reports whether the folder may be shared with the
+// device. A device bound to a tailnet node may only get the folders its grant
+// lists; any other device may get any folder.
+func (cfg DeviceConfiguration) TailnetAllowsFolder(id string) bool {
+	return cfg.TailnetNodeID == "" || slices.Contains(cfg.TailnetFolders, id)
 }
 
 func (cfg *DeviceConfiguration) prepare(sharedFolders []string) {
@@ -62,6 +76,13 @@ func (cfg *DeviceConfiguration) prepare(sharedFolders []string) {
 	}
 
 	cfg.IgnoredFolders = sortedObservedFolderSlice(ignoredFolders)
+
+	// A device that the tailnet authorized must not bring in further
+	// devices.
+	if cfg.TailnetNodeID != "" && cfg.Introducer {
+		slog.Warn("Device is bound to a tailnet node, removing introducer flag", cfg.DeviceID.LogAttr())
+		cfg.Introducer = false
+	}
 
 	// A device cannot be simultaneously untrusted and an introducer, nor
 	// auto accept folders.

@@ -1,0 +1,341 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
+package tailscale
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/netip"
+	"slices"
+	"strings"
+	"time"
+
+	"tailscale.com/client/tailscale/apitype"
+	"tailscale.com/tailcfg"
+
+	"github.com/syncthing/syncthing/internal/slogutil"
+	"github.com/syncthing/syncthing/lib/config"
+	"github.com/syncthing/syncthing/lib/protocol"
+)
+
+// CapSyncthing is the application capability that a tailnet policy grant
+// gives to the nodes that may be Syncthing devices of the destination node.
+// Its values are Grants.
+const CapSyncthing tailcfg.PeerCapability = "syncthing.net/cap/syncthing"
+
+const whoisTimeout = 5 * time.Second
+
+// A Grant is one value of CapSyncthing. When several grants match a node,
+// their folders are merged.
+type Grant struct {
+	// Folders lists the IDs of the folders that the destination node may
+	// share with the source node.
+	Folders []string `json:"folders"`
+}
+
+// authorization is what the tailnet says about one peer.
+type authorization struct {
+	nodeID  tailcfg.StableNodeID
+	name    string
+	folders []string // sorted, without duplicates
+}
+
+var errTailnetUnavailable = errors.New("tailscale is unavailable")
+
+// CheckConnection decides, before the Hello exchange, what the tailnet says
+// about an authenticated connection, and returns the node that it authorizes
+// the connection for, if any. Devices configured by hand are not affected. A
+// device bound to a tailnet node is allowed only while that node holds the
+// grant, and its folders follow the grant. An unknown device is added when
+// auto-accept is on and the tailnet authorizes it; otherwise it is left to
+// become pending, as usual. direct is false for relayed connections, which
+// the tailnet can never authorize.
+func (t *Tailnet) CheckConnection(ctx context.Context, deviceID protocol.DeviceID, local, remote net.Addr, direct bool) (string, error) {
+	dev, known := t.cfg.Device(deviceID)
+	if known && dev.TailnetNodeID == "" {
+		return "", nil
+	}
+	if !known && !t.cfg.Options().TailscaleAutoAcceptDevices {
+		return "", nil
+	}
+
+	auth, err := t.authorizeConnection(ctx, local, remote, direct)
+	if !known {
+		if err != nil {
+			slog.DebugContext(ctx, "Unknown device not authorized by the tailnet", deviceID.LogAttr(), slogutil.Address(remote), slogutil.Error(err))
+			return "", nil
+		}
+		t.addDevice(ctx, deviceID, auth)
+		return string(auth.nodeID), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := t.checkBound(ctx, dev, auth); err != nil {
+		return "", err
+	}
+	return string(auth.nodeID), nil
+}
+
+// CheckEstablished checks an established connection of a device bound to a
+// tailnet node again; its local address was checked when it was set up.
+func (t *Tailnet) CheckEstablished(ctx context.Context, deviceID protocol.DeviceID, remote net.Addr) error {
+	dev, ok := t.cfg.Device(deviceID)
+	if !ok || dev.TailnetNodeID == "" {
+		return nil
+	}
+	auth, err := t.authorizeRemote(ctx, remote)
+	if err != nil {
+		return err
+	}
+	return t.checkBound(ctx, dev, auth)
+}
+
+func (t *Tailnet) checkBound(ctx context.Context, dev config.DeviceConfiguration, auth authorization) error {
+	if string(auth.nodeID) != dev.TailnetNodeID {
+		return fmt.Errorf("device is bound to tailnet node %s, but the connection belongs to node %s", dev.TailnetNodeID, auth.nodeID)
+	}
+	t.applyGrant(ctx, dev.DeviceID, auth)
+	return nil
+}
+
+// authorizeConnection requires a direct connection that arrived on one of our
+// tailnet addresses, then asks tailscaled who is at the remote end.
+func (t *Tailnet) authorizeConnection(ctx context.Context, local, remote net.Addr, direct bool) (authorization, error) {
+	if !direct {
+		return authorization{}, errors.New("relayed connections are never authorized by the tailnet")
+	}
+	localAddr, err := netip.ParseAddrPort(local.String())
+	if err != nil {
+		return authorization{}, fmt.Errorf("local address %s: %w", local, err)
+	}
+	t.mut.Lock()
+	self := t.self
+	t.mut.Unlock()
+	if !slices.Contains(self, localAddr.Addr().Unmap()) {
+		return authorization{}, fmt.Errorf("connection to %s is not on the tailnet", local)
+	}
+	return t.authorizeRemote(ctx, remote)
+}
+
+// authorizeRemote asks tailscaled who holds the remote address, which must
+// not be one of ours: another user on this host could connect from it.
+func (t *Tailnet) authorizeRemote(ctx context.Context, remote net.Addr) (authorization, error) {
+	remoteAddr, err := netip.ParseAddrPort(remote.String())
+	if err != nil {
+		return authorization{}, fmt.Errorf("remote address %s: %w", remote, err)
+	}
+	t.mut.Lock()
+	self, domain, terr := t.self, t.domain, t.err
+	t.mut.Unlock()
+	if terr != nil || len(self) == 0 {
+		return authorization{}, errTailnetUnavailable
+	}
+	if slices.Contains(self, remoteAddr.Addr().Unmap()) {
+		return authorization{}, errors.New("connection comes from one of our own tailnet addresses")
+	}
+	return t.whois(ctx, remoteAddr.String(), domain)
+}
+
+func (t *Tailnet) whois(ctx context.Context, addr, domain string) (authorization, error) {
+	ctx, cancel := context.WithTimeout(ctx, whoisTimeout)
+	defer cancel()
+	who, err := t.api.WhoIs(ctx, addr)
+	if err != nil {
+		return authorization{}, fmt.Errorf("whois %s: %w", addr, err)
+	}
+	return authorizationFrom(who, domain, time.Now())
+}
+
+// authorizationFrom accepts a tagged node of our own tailnet, named in its
+// domain, whose key is valid and that holds CapSyncthing. Anything else is
+// refused.
+func authorizationFrom(who *apitype.WhoIsResponse, domain string, now time.Time) (authorization, error) {
+	n := who.Node
+	switch {
+	case n == nil:
+		return authorization{}, errors.New("whois returned no node")
+	case tailnetDomain(n.Name) != domain:
+		return authorization{}, fmt.Errorf("tailnet node %s belongs to another tailnet", n.Name)
+	case n.Expired || !n.KeyExpiry.IsZero() && !n.KeyExpiry.After(now):
+		return authorization{}, errors.New("tailnet node key has expired")
+	case !slices.Contains(n.Tags, PeerTag):
+		return authorization{}, errors.New("tailnet node is not tagged " + PeerTag)
+	}
+	if _, ok := who.CapMap[CapSyncthing]; !ok {
+		return authorization{}, errors.New("tailnet policy does not grant " + string(CapSyncthing))
+	}
+	grants, err := tailcfg.UnmarshalCapJSON[Grant](who.CapMap, CapSyncthing)
+	if err != nil {
+		return authorization{}, fmt.Errorf("invalid %s grant: %w", CapSyncthing, err)
+	}
+	var folders []string
+	for _, g := range grants {
+		folders = append(folders, g.Folders...)
+	}
+	slices.Sort(folders)
+	folders = slices.Compact(folders)
+
+	name := n.ComputedName
+	if name == "" {
+		name, _, _ = strings.Cut(n.Name, ".")
+	}
+	return authorization{nodeID: n.StableID, name: name, folders: folders}, nil
+}
+
+// addDevice adds an unknown device bound to its tailnet node, shared with
+// the granted folders that exist here. A node gets at most one device.
+func (t *Tailnet) addDevice(ctx context.Context, deviceID protocol.DeviceID, auth authorization) {
+	if deviceID == t.cfg.MyID() {
+		return
+	}
+	// Check before modifying, so that the common cases do not commit an
+	// unchanged configuration; the check is repeated inside Modify.
+	for _, dev := range t.cfg.RawCopy().Devices {
+		if dev.DeviceID == deviceID {
+			return
+		}
+		if dev.TailnetNodeID == string(auth.nodeID) {
+			slog.WarnContext(ctx, "Not adding device: its tailnet node is already bound to another device", deviceID.LogAttr(), slog.String("node", string(auth.nodeID)))
+			return
+		}
+	}
+	var added, conflict bool
+	w, err := t.cfg.Modify(func(cfg *config.Configuration) {
+		for _, dev := range cfg.Devices {
+			if dev.DeviceID == deviceID {
+				return
+			}
+			if dev.TailnetNodeID == string(auth.nodeID) {
+				conflict = true
+				return
+			}
+		}
+		dev := cfg.Defaults.Device.Copy()
+		dev.DeviceID = deviceID
+		dev.Name = auth.name
+		dev.Addresses = []string{"dynamic"}
+		dev.Paused = false
+		// A tailnet device must not be able to bring in further devices.
+		dev.Introducer = false
+		dev.IntroducedBy = protocol.EmptyDeviceID
+		// Offers are limited to the granted folders; see TailnetAllowsFolder.
+		dev.AutoAcceptFolders = true
+		dev.TailnetNodeID = string(auth.nodeID)
+		dev.TailnetFolders = auth.folders
+		cfg.Devices = append(cfg.Devices, dev)
+		shareGrantedFolders(cfg, deviceID, auth.folders)
+		added = true
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to add device authorized by the tailnet", deviceID.LogAttr(), slogutil.Error(err))
+		return
+	}
+	w.Wait()
+	switch {
+	case added:
+		slog.InfoContext(ctx, "Added device authorized by the tailnet", deviceID.LogAttr(), slog.String("name", auth.name), slog.String("node", string(auth.nodeID)), slog.Any("folders", auth.folders))
+	case conflict:
+		slog.WarnContext(ctx, "Not adding device: its tailnet node is already bound to another device", deviceID.LogAttr(), slog.String("node", string(auth.nodeID)))
+	}
+}
+
+// applyGrant makes the folders shared with a bound device match its grant.
+func (t *Tailnet) applyGrant(ctx context.Context, deviceID protocol.DeviceID, auth authorization) {
+	if grantApplied(t.cfg.RawCopy(), deviceID, auth.folders) {
+		return
+	}
+	w, err := t.cfg.Modify(func(cfg *config.Configuration) {
+		for i := range cfg.Devices {
+			if cfg.Devices[i].DeviceID == deviceID && cfg.Devices[i].TailnetNodeID == string(auth.nodeID) {
+				cfg.Devices[i].TailnetFolders = auth.folders
+				shareGrantedFolders(cfg, deviceID, auth.folders)
+				return
+			}
+		}
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to apply tailnet grant", deviceID.LogAttr(), slogutil.Error(err))
+		return
+	}
+	w.Wait()
+	slog.InfoContext(ctx, "Applied tailnet grant", deviceID.LogAttr(), slog.Any("folders", auth.folders))
+}
+
+func grantApplied(cfg config.Configuration, deviceID protocol.DeviceID, granted []string) bool {
+	for _, dev := range cfg.Devices {
+		if dev.DeviceID == deviceID && !slices.Equal(dev.TailnetFolders, granted) {
+			return false
+		}
+	}
+	for _, f := range cfg.Folders {
+		if slices.Contains(granted, f.ID) && !f.SharedWith(deviceID) {
+			return false
+		}
+	}
+	return true
+}
+
+// shareGrantedFolders shares the granted local folders with the device. The
+// configuration itself unshares the folders that are not granted; see
+// config.DeviceConfiguration.TailnetAllowsFolder.
+func shareGrantedFolders(cfg *config.Configuration, deviceID protocol.DeviceID, granted []string) {
+	for i := range cfg.Folders {
+		f := &cfg.Folders[i]
+		if slices.Contains(granted, f.ID) && !f.SharedWith(deviceID) {
+			f.Devices = append(f.Devices, config.FolderDeviceConfiguration{DeviceID: deviceID})
+		}
+	}
+}
+
+// reconcile applies the tailnet to the configuration after a refresh or a
+// probe: probed peers that the tailnet authorizes are added when auto-accept
+// is on, and the folders of bound devices follow their grants.
+func (t *Tailnet) reconcile(ctx context.Context) {
+	type probed struct {
+		nodeID   tailcfg.StableNodeID
+		addr     netip.Addr
+		deviceID protocol.DeviceID
+	}
+	t.mut.Lock()
+	peers := make([]probed, 0, len(t.peers))
+	for id, p := range t.peers {
+		peers = append(peers, probed{id, p.addrs[0], p.deviceID})
+	}
+	domain := t.domain
+	t.mut.Unlock()
+
+	cfg := t.cfg.RawCopy()
+	devices := cfg.DeviceMap()
+	bound := make(map[string]protocol.DeviceID)
+	for _, dev := range cfg.Devices {
+		if dev.TailnetNodeID != "" {
+			bound[dev.TailnetNodeID] = dev.DeviceID
+		}
+	}
+
+	for _, p := range peers {
+		boundID, isBound := bound[string(p.nodeID)]
+		_, known := devices[p.deviceID]
+		probedUnknown := p.deviceID != protocol.EmptyDeviceID && !known
+		if !isBound && !(probedUnknown && cfg.Options.TailscaleAutoAcceptDevices) {
+			continue
+		}
+		auth, err := t.whois(ctx, p.addr.String(), domain)
+		if err != nil || auth.nodeID != p.nodeID {
+			continue
+		}
+		if isBound {
+			t.applyGrant(ctx, boundID, auth)
+		} else {
+			t.addDevice(ctx, p.deviceID, auth)
+		}
+	}
+}

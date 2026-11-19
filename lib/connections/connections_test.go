@@ -501,3 +501,62 @@ func mustGetCert(b interface{ Fatal(...any) }) tls.Certificate {
 	}
 	return cert
 }
+
+// admissionModel accepts every Hello and records admitted connections; the
+// other Model methods are not reached by the tests that use it.
+type admissionModel struct {
+	Model
+	added chan protocol.DeviceID
+}
+
+func (admissionModel) OnHello(protocol.DeviceID, net.Addr, protocol.Hello) error { return nil }
+
+func (m admissionModel) AddConnection(conn protocol.Connection, _ protocol.Hello) {
+	m.added <- conn.DeviceID()
+}
+
+type closeRecordingConn struct {
+	tlsConn
+	closed chan struct{}
+}
+
+func (c *closeRecordingConn) Close() error {
+	close(c.closed)
+	return nil
+}
+
+func (*closeRecordingConn) SetDeadline(time.Time) error { return nil }
+
+func (*closeRecordingConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (*closeRecordingConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22000}
+}
+
+func TestHandleHellosRequiresTailnetNodeForBoundDevice(t *testing.T) {
+	// A device bound to a tailnet node, for instance added by another
+	// connection while this one exchanged Hellos, is not admitted on a
+	// connection that the tailnet did not authorize for that node.
+	bound := protocol.DeviceID{1}
+	cfg := config.New(protocol.LocalDeviceID)
+	cfg.Devices = append(cfg.Devices, config.DeviceConfiguration{DeviceID: bound, TailnetNodeID: "n1"})
+	mdl := admissionModel{added: make(chan protocol.DeviceID, 1)}
+	s := &service{
+		cfg:    config.Wrap("", cfg, protocol.LocalDeviceID, events.NoopLogger),
+		model:  mdl,
+		hellos: make(chan *connWithHello),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.handleHellos(ctx)
+
+	conn := &closeRecordingConn{closed: make(chan struct{})}
+	s.hellos <- &connWithHello{c: internalConn{tlsConn: conn, connType: connTypeTCPServer}, remoteID: bound}
+	select {
+	case <-conn.closed:
+	case <-mdl.added:
+		t.Fatal("bound device admitted on a connection the tailnet did not authorize")
+	case <-time.After(5 * time.Second):
+		t.Fatal("connection neither closed nor admitted")
+	}
+}

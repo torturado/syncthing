@@ -85,6 +85,10 @@ type OptionsConfiguration struct {
 	// tag:syncthing, using the local tailscaled. See
 	// docs/tailscale/threat-model.md.
 	TailscaleDiscoveryEnabled bool `json:"tailscaleDiscoveryEnabled" xml:"tailscaleDiscoveryEnabled" default:"false"`
+	// Add unknown devices whose tailnet node holds the
+	// syncthing.net/cap/syncthing grant, instead of leaving them pending.
+	// This delegates device and folder authorization to the tailnet policy.
+	TailscaleAutoAcceptDevices bool `json:"tailscaleAutoAcceptDevices" xml:"tailscaleAutoAcceptDevices" default:"false"`
 
 	// Legacy deprecated
 	DeprecatedUPnPEnabled        bool     `json:"-" xml:"upnpEnabled,omitempty"`        // Deprecated: Do not use.

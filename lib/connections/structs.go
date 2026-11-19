@@ -45,6 +45,7 @@ type internalConn struct {
 	priority      int
 	establishedAt time.Time
 	connectionID  string // set after Hello exchange
+	tailnetNode   string // the tailnet node that authorized this connection, if any
 }
 
 type connType int

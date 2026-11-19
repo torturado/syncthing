@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
@@ -35,6 +36,7 @@ import (
 type fakeLocalAPI struct {
 	mut    sync.Mutex
 	status *ipnstate.Status
+	whois  map[string]*apitype.WhoIsResponse // by remote IP
 	err    error
 	down   chan struct{}
 	notify chan struct{}
@@ -48,6 +50,32 @@ func (f *fakeLocalAPI) Status(context.Context) (*ipnstate.Status, error) {
 	f.mut.Lock()
 	defer f.mut.Unlock()
 	return f.status, f.err
+}
+
+func (f *fakeLocalAPI) WhoIs(_ context.Context, remoteAddr string) (*apitype.WhoIsResponse, error) {
+	f.mut.Lock()
+	defer f.mut.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	host := remoteAddr
+	if ap, err := netip.ParseAddrPort(remoteAddr); err == nil {
+		host = ap.Addr().String()
+	}
+	who, ok := f.whois[host]
+	if !ok {
+		return nil, errors.New("peer not found")
+	}
+	return who, nil
+}
+
+func (f *fakeLocalAPI) setWhoIs(ip string, who *apitype.WhoIsResponse) {
+	f.mut.Lock()
+	defer f.mut.Unlock()
+	if f.whois == nil {
+		f.whois = make(map[string]*apitype.WhoIsResponse)
+	}
+	f.whois[ip] = who
 }
 
 func (f *fakeLocalAPI) WatchIPNBus(ctx context.Context, _ ipn.NotifyWatchOpt) (ipnBusWatcher, error) {

@@ -601,6 +601,20 @@ func ensureNoUntrustedTrustingSharing(f *FolderConfiguration, devices []FolderDe
 	return devices
 }
 
+// ensureTailnetGrants unshares the folder from devices bound to a tailnet
+// node whose grant does not list it, whatever shared it: the GUI, an
+// introducer or auto-accept.
+func ensureTailnetGrants(f *FolderConfiguration, devices []FolderDeviceConfiguration, existingDevices map[protocol.DeviceID]*DeviceConfiguration) []FolderDeviceConfiguration {
+	return slices.DeleteFunc(devices, func(dev FolderDeviceConfiguration) bool {
+		devCfg, ok := existingDevices[dev.DeviceID]
+		if !ok || devCfg.TailnetAllowsFolder(f.ID) {
+			return false
+		}
+		slog.Warn("Folder is not in the tailnet grant of the device; unsharing", dev.DeviceID.LogAttr(), f.LogAttr())
+		return true
+	})
+}
+
 func cleanSymlinks(filesystem fs.Filesystem, dir string) {
 	if build.IsWindows {
 		// We don't do symlinks on Windows. Additionally, there may

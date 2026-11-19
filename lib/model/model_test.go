@@ -1230,6 +1230,32 @@ func TestAutoAcceptMultipleFolders(t *testing.T) {
 	}
 }
 
+func TestAutoAcceptTailnetDeviceOnlyGrantedFolders(t *testing.T) {
+	// A device bound to a tailnet node only auto-accepts the folders its
+	// grant lists, whether they are new or already exist here.
+	grantedID, otherID, existingID := srand.String(8), srand.String(8), srand.String(8)
+	tcfg := defaultAutoAcceptCfg.Copy()
+	tcfg.Devices[1].TailnetNodeID = "n1"
+	tcfg.Devices[1].TailnetFolders = []string{grantedID}
+	tcfg.Folders = []config.FolderConfiguration{
+		{FilesystemType: config.FilesystemTypeFake, ID: existingID, Path: existingID},
+	}
+	m, cancel := newState(t, tcfg)
+	defer cleanupModel(m)
+	defer cancel()
+	m.ClusterConfig(device1Conn, createClusterConfig(device1, grantedID, otherID, existingID))
+
+	if fcfg, ok := m.cfg.Folder(grantedID); !ok || !fcfg.SharedWith(device1) {
+		t.Error("granted folder not accepted", grantedID)
+	}
+	if _, ok := m.cfg.Folder(otherID); ok {
+		t.Error("folder outside the grant was accepted", otherID)
+	}
+	if fcfg, ok := m.cfg.Folder(existingID); !ok || fcfg.SharedWith(device1) {
+		t.Error("existing folder outside the grant was shared", existingID)
+	}
+}
+
 func TestAutoAcceptExistingFolder(t *testing.T) {
 	// Existing folder
 	id := srand.String(8)

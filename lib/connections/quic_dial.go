@@ -107,7 +107,7 @@ func (quicDialerFactory) New(opts config.OptionsConfiguration, tlsCfg *tls.Confi
 			wanPriority:       opts.ConnectionPriorityQUICWAN,
 			allowsMultiConns:  true,
 		},
-		registry: dialRegistry(opts, registry),
+		registry: registry,
 	}
 }
 

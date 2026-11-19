@@ -212,6 +212,10 @@ type service struct {
 	listeners      map[string]genericListener
 	listenerTokens map[string]suture.ServiceToken
 	listenerCfg    config.Configuration // last configuration applied to the listeners
+	// In listen-only mode listeners register their sockets here instead of
+	// in the shared registry: bound to tailnet addresses, they cannot carry
+	// dials or discovery announcements to peers elsewhere.
+	tailnetRegistry *registry.Registry
 
 	// Connections of devices bound to a tailnet node, by connection ID, and
 	// those whose re-check is running.
@@ -982,7 +986,14 @@ func (s *service) createListener(factory listenerFactory, uri *url.URL) bool {
 
 	slog.Debug("Starting listener", "uri", uri)
 
-	listener := factory.New(uri, s.cfg, s.tlsCfg, s.conns, s.natService, s.registry, s.lanChecker)
+	reg := s.registry
+	if s.listenerCfg.Options.TailscaleListenOnly {
+		if s.tailnetRegistry == nil {
+			s.tailnetRegistry = registry.New()
+		}
+		reg = s.tailnetRegistry
+	}
+	listener := factory.New(uri, s.cfg, s.tlsCfg, s.conns, s.natService, reg, s.lanChecker)
 	listener.OnAddressesChanged(s.logListenAddressesChangedEvent)
 
 	// Retrying a listener many times in rapid succession is unlikely to help,
@@ -1081,6 +1092,15 @@ func (s *service) listenAddresses(cfg config.Configuration) []string {
 func (s *service) updateListeners(to config.Configuration) {
 	s.listenersMut.Lock()
 	defer s.listenersMut.Unlock()
+	if s.listenerCfg.Options.TailscaleListenOnly != to.Options.TailscaleListenOnly {
+		// Listeners register in a different registry in listen-only mode,
+		// so all of them are started again.
+		for addr := range s.listeners {
+			_ = s.Remove(s.listenerTokens[addr])
+			delete(s.listenerTokens, addr)
+			delete(s.listeners, addr)
+		}
+	}
 	s.listenerCfg = to
 	s.updateListenersLocked()
 }

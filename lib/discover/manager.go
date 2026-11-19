@@ -48,13 +48,16 @@ type manager struct {
 	evLogger      events.Logger
 	addressLister AddressLister
 	registry      *registry.Registry
+	tailnet       TailnetResolver
 
 	mut     sync.RWMutex
 	finders map[string]cachedFinder
 	tokens  map[string]suture.ServiceToken
 }
 
-func NewManager(myID protocol.DeviceID, cfg config.Wrapper, cert tls.Certificate, evLogger events.Logger, lister AddressLister, registry *registry.Registry) Manager {
+// NewManager returns a discovery manager. tailnet may be nil, in which case
+// Tailscale discovery is never used.
+func NewManager(myID protocol.DeviceID, cfg config.Wrapper, cert tls.Certificate, evLogger events.Logger, lister AddressLister, registry *registry.Registry, tailnet TailnetResolver) Manager {
 	m := &manager{
 		Supervisor:    suture.New("discover.Manager", svcutil.SpecWithDebugLogger()),
 		myID:          myID,
@@ -63,6 +66,7 @@ func NewManager(myID protocol.DeviceID, cfg config.Wrapper, cert tls.Certificate
 		evLogger:      evLogger,
 		addressLister: lister,
 		registry:      registry,
+		tailnet:       tailnet,
 		finders:       make(map[string]cachedFinder),
 		tokens:        make(map[string]suture.ServiceToken),
 	}
@@ -131,8 +135,8 @@ func (*manager) Error() error {
 }
 
 func (m *manager) ChildErrors() map[string]error {
-	children := make(map[string]error, len(m.finders))
 	m.mut.RLock()
+	children := make(map[string]error, len(m.finders))
 	for _, f := range m.finders {
 		children[f.String()] = f.Error()
 	}
@@ -200,6 +204,11 @@ func (m *manager) CommitConfiguration(_, to config.Configuration) (handled bool)
 		toIdentities[ipv6Identity(to.Options.LocalAnnMCAddr)] = struct{}{}
 	}
 
+	useTailnet := to.Options.TailscaleDiscoveryEnabled && m.tailnet != nil
+	if useTailnet {
+		toIdentities[tailscaleIdentity] = struct{}{}
+	}
+
 	// Remove things that we're not expected to have.
 	for identity := range m.finders {
 		if _, ok := toIdentities[identity]; !ok {
@@ -250,6 +259,11 @@ func (m *manager) CommitConfiguration(_, to config.Configuration) (handled bool)
 				m.addLocked(v6Identity, mcd, 0, 0)
 			}
 		}
+	}
+
+	if _, ok := m.finders[tailscaleIdentity]; useTailnet && !ok {
+		// The tailnet table is live and in memory, so there is nothing to cache.
+		m.addLocked(tailscaleIdentity, tailscaleFinder{m.tailnet}, 0, 0)
 	}
 
 	return true

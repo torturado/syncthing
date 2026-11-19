@@ -80,6 +80,12 @@ type OptionsConfiguration struct {
 	ConnectionPriorityQUICWAN          int `json:"connectionPriorityQuicWan" xml:"connectionPriorityQuicWan" default:"40"`
 	ConnectionPriorityRelay            int `json:"connectionPriorityRelay" xml:"connectionPriorityRelay" default:"50"`
 	ConnectionPriorityUpgradeThreshold int `json:"connectionPriorityUpgradeThreshold" xml:"connectionPriorityUpgradeThreshold" default:"0"`
+
+	// Resolve devices to the addresses of tailnet peers tagged
+	// tag:syncthing, using the local tailscaled. See
+	// docs/tailscale/threat-model.md.
+	TailscaleDiscoveryEnabled bool `json:"tailscaleDiscoveryEnabled" xml:"tailscaleDiscoveryEnabled" default:"false"`
+
 	// Legacy deprecated
 	DeprecatedUPnPEnabled        bool     `json:"-" xml:"upnpEnabled,omitempty"`        // Deprecated: Do not use.
 	DeprecatedUPnPLeaseM         int      `json:"-" xml:"upnpLeaseMinutes,omitempty"`   // Deprecated: Do not use.

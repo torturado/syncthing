@@ -341,6 +341,24 @@ func TestDeviceRename(t *testing.T) {
 	}
 }
 
+func TestTailnetDeviceKeepsTailnetName(t *testing.T) {
+	// A device bound to a tailnet node keeps the name the tailnet gave it,
+	// even when remote names are allowed to overwrite local ones.
+	rawCfg := config.New(device1)
+	rawCfg.Options.OverwriteRemoteDevNames = true
+	rawCfg.Devices = []config.DeviceConfiguration{{DeviceID: device1, Name: "laptop", TailnetNodeID: "n1"}}
+	cfg, cfgCancel := newConfigWrapper(rawCfg)
+	defer cfgCancel()
+	m := newModel(t, cfg, myID, nil)
+	m.ServeBackground()
+	defer cleanupModel(m)
+
+	m.AddConnection(newFakeConnection(device1, m), protocol.Hello{DeviceName: "impostor"})
+	if name := cfg.Devices()[device1].Name; name != "laptop" {
+		t.Errorf("tailnet device renamed to %q by its Hello", name)
+	}
+}
+
 // Adjusted copy of the original function for testing purposes
 func saveConfig(ffs fs.Filesystem, path string, cfg config.Configuration) error {
 	fd, err := ffs.Create(path)
@@ -1227,6 +1245,32 @@ func TestAutoAcceptMultipleFolders(t *testing.T) {
 	}
 	if fcfg, ok := m.cfg.Folder(id2); !ok || !fcfg.SharedWith(device1) {
 		t.Error("expected shared", id2)
+	}
+}
+
+func TestAutoAcceptTailnetDeviceOnlyGrantedFolders(t *testing.T) {
+	// A device bound to a tailnet node only auto-accepts the folders its
+	// grant lists, whether they are new or already exist here.
+	grantedID, otherID, existingID := srand.String(8), srand.String(8), srand.String(8)
+	tcfg := defaultAutoAcceptCfg.Copy()
+	tcfg.Devices[1].TailnetNodeID = "n1"
+	tcfg.Devices[1].TailnetFolders = []string{grantedID}
+	tcfg.Folders = []config.FolderConfiguration{
+		{FilesystemType: config.FilesystemTypeFake, ID: existingID, Path: existingID},
+	}
+	m, cancel := newState(t, tcfg)
+	defer cleanupModel(m)
+	defer cancel()
+	m.ClusterConfig(device1Conn, createClusterConfig(device1, grantedID, otherID, existingID))
+
+	if fcfg, ok := m.cfg.Folder(grantedID); !ok || !fcfg.SharedWith(device1) {
+		t.Error("granted folder not accepted", grantedID)
+	}
+	if _, ok := m.cfg.Folder(otherID); ok {
+		t.Error("folder outside the grant was accepted", otherID)
+	}
+	if fcfg, ok := m.cfg.Folder(existingID); !ok || fcfg.SharedWith(device1) {
+		t.Error("existing folder outside the grant was shared", existingID)
 	}
 }
 

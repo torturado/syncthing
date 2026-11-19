@@ -278,7 +278,7 @@ func (a *App) startup() error {
 	connRegistry := registry.New()
 	tailnet := tailscale.New(a.cfg, tlsCfg)
 	discoveryManager := discover.NewManager(a.myID, a.cfg, a.cert, a.evLogger, addrLister, connRegistry, tailnet)
-	connectionsService := connections.NewService(a.cfg, a.myID, m, tlsCfg, discoveryManager, bepProtocolName, tlsDefaultCommonName, a.evLogger, connRegistry, keyGen)
+	connectionsService := connections.NewService(a.cfg, a.myID, m, tlsCfg, discoveryManager, bepProtocolName, tlsDefaultCommonName, a.evLogger, connRegistry, keyGen, tailnet)
 
 	addrLister.AddressLister = connectionsService
 

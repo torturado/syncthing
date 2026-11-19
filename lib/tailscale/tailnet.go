@@ -6,7 +6,8 @@
 
 // Package tailscale integrates Syncthing with the local tailscaled. It keeps a
 // table of the tailnet peers tagged tag:syncthing, learns which device ID each
-// of them presents, and resolves device IDs to tailnet addresses.
+// of them presents, resolves device IDs to tailnet addresses, and, when
+// enabled, lets the tailnet policy authorize devices.
 //
 // The security behaviour is specified in docs/tailscale/threat-model.md.
 package tailscale
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
@@ -45,7 +47,9 @@ const (
 	probeTimeout    = 10 * time.Second
 	probeParallel   = 4
 	probeRetryMin   = 15 * time.Second
-	probeRetryMax   = 2 * time.Minute
+	// A failed probe costs the peer nothing it logs, and a fresh peer is
+	// often unreachable for a while until its path is established.
+	probeRetryMax = 30 * time.Second
 	// Bounds the exponent of the probe backoff, so the shift cannot
 	// overflow; probeRetryMax is reached well before.
 	probeMaxDoublings = 8
@@ -56,6 +60,7 @@ const (
 // localAPI is the part of the tailscaled LocalAPI that the integration uses.
 type localAPI interface {
 	Status(ctx context.Context) (*ipnstate.Status, error)
+	WhoIs(ctx context.Context, remoteAddr string) (*apitype.WhoIsResponse, error)
 	WatchIPNBus(ctx context.Context, mask ipn.NotifyWatchOpt) (ipnBusWatcher, error)
 }
 
@@ -78,23 +83,34 @@ func (c *localClient) WatchIPNBus(ctx context.Context, mask ipn.NotifyWatchOpt) 
 	return w, nil
 }
 
-// Tailnet tracks the Syncthing peers on the local tailnet while Tailscale
-// discovery is enabled. It is a suture service.
+// Tailnet tracks the Syncthing peers on the local tailnet while any part of
+// the integration is in use. It is a suture service.
 type Tailnet struct {
 	cfg           config.Wrapper
 	api           localAPI
 	tlsCfg        *tls.Config
 	port          uint16
 	configChanged chan struct{}
+	updates       chan struct{}
 
 	mut     sync.Mutex
 	err     error
+	self    []netip.Addr // our tailnet addresses; empty while unavailable
+	domain  string       // our tailnet's MagicDNS domain
 	peers   map[tailcfg.StableNodeID]*peer
-	probing int // probes in flight
+	probing int    // probes in flight
+	epoch   uint64 // grows each time the tailnet stops being available
+
+	// grantMut serializes configuration writes from tailnet answers;
+	// grantSeen holds, per device, when the answer last applied was asked
+	// for, so that an older answer never overwrites a newer one.
+	grantMut  sync.Mutex
+	grantSeen map[protocol.DeviceID]time.Time
 }
 
 type peer struct {
 	addrs     []netip.Addr      // tailnet addresses, IPv4 first; never modified
+	since     time.Time         // when the table first held the node with these addresses
 	deviceID  protocol.DeviceID // learned by probing; empty until then
 	probing   bool
 	failures  int
@@ -115,6 +131,8 @@ func newTailnet(cfg config.Wrapper, api localAPI, tlsCfg *tls.Config, port uint1
 		tlsCfg:        tlsCfg,
 		port:          port,
 		configChanged: make(chan struct{}, 1),
+		updates:       make(chan struct{}, 1),
+		grantSeen:     make(map[protocol.DeviceID]time.Time),
 	}
 }
 
@@ -182,6 +200,20 @@ func (t *Tailnet) watch(ctx context.Context) (connected bool, err error) {
 		}
 	}()
 
+	// Reconciling the configuration calls WhoIs and waits for configuration
+	// commits, so it runs beside the watch loop rather than in it.
+	reconcileNow := make(chan struct{}, 1)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-reconcileNow:
+				t.reconcile(ctx)
+			}
+		}
+	}()
+
 	probed := make(chan struct{}, 1)
 	ticker := time.NewTicker(refreshInterval)
 	defer ticker.Stop()
@@ -199,6 +231,10 @@ func (t *Tailnet) watch(ctx context.Context) (connected bool, err error) {
 			refresh = false
 		}
 		t.startProbes(ctx, probed)
+		select {
+		case reconcileNow <- struct{}{}:
+		default:
+		}
 
 		select {
 		case <-ctx.Done():
@@ -234,7 +270,14 @@ func (t *Tailnet) refresh(ctx context.Context) error {
 
 	t.mut.Lock()
 	defer t.mut.Unlock()
+	defer t.notifyUpdate()
+	defer t.countOutageLocked(t.availableLocked())
 	t.setErrLocked(err)
+	t.self = nil
+	if err == nil {
+		t.self = slices.Clone(st.TailscaleIPs)
+		t.domain = tailnetDomain(st.Self.DNSName)
+	}
 	old := t.peers
 	t.peers = make(map[tailcfg.StableNodeID]*peer, len(peers))
 	for id, addrs := range peers {
@@ -244,7 +287,7 @@ func (t *Tailnet) refresh(ctx context.Context) error {
 		}
 		// New peer, or one whose addresses changed (possibly a reused
 		// address): learn its device ID again.
-		t.peers[id] = &peer{addrs: addrs}
+		t.peers[id] = &peer{addrs: addrs, since: time.Now()}
 	}
 	return nil
 }
@@ -287,6 +330,11 @@ func tailnetDomain(fqdn string) string {
 }
 
 func (t *Tailnet) startProbes(ctx context.Context, probed chan<- struct{}) {
+	// Probe results serve discovery and enrollment only; checking devices
+	// that are already bound does not need them.
+	if opts := t.cfg.Options(); !opts.TailscaleDiscoveryEnabled && !opts.TailscaleAutoAcceptDevices {
+		return
+	}
 	now := time.Now()
 	t.mut.Lock()
 	defer t.mut.Unlock()
@@ -345,8 +393,33 @@ func (t *Tailnet) probe(ctx context.Context, p *peer, probed chan<- struct{}) {
 func (t *Tailnet) reset(err error) {
 	t.mut.Lock()
 	defer t.mut.Unlock()
+	defer t.notifyUpdate()
+	defer t.countOutageLocked(t.availableLocked())
 	t.setErrLocked(err)
+	t.self = nil
 	t.peers = nil
+}
+
+// countOutageLocked starts a new outage epoch if the tailnet was available
+// and no longer is.
+func (t *Tailnet) countOutageLocked(wasAvailable bool) {
+	if wasAvailable && !t.availableLocked() {
+		t.epoch++
+	}
+}
+
+func (t *Tailnet) notifyUpdate() {
+	select {
+	case t.updates <- struct{}{}:
+	default:
+	}
+}
+
+// Updates is signalled whenever the tailnet state has been read again, at
+// least every refreshInterval while the integration is in use, so that
+// established connections can be checked again.
+func (t *Tailnet) Updates() <-chan struct{} {
+	return t.updates
 }
 
 func (t *Tailnet) setErrLocked(err error) {
@@ -357,7 +430,18 @@ func (t *Tailnet) setErrLocked(err error) {
 }
 
 func (t *Tailnet) enabled() bool {
-	return t.cfg.Options().TailscaleDiscoveryEnabled
+	return inUse(t.cfg.RawCopy())
+}
+
+// inUse reports whether the configuration needs the tailnet: for discovery,
+// for auto-accept, or to keep checking devices that the tailnet authorized.
+func inUse(cfg config.Configuration) bool {
+	if cfg.Options.TailscaleDiscoveryEnabled || cfg.Options.TailscaleAutoAcceptDevices {
+		return true
+	}
+	return slices.ContainsFunc(cfg.Devices, func(dev config.DeviceConfiguration) bool {
+		return dev.TailnetNodeID != ""
+	})
 }
 
 // DeviceAddresses returns the BEP addresses of the tailnet peers that
@@ -404,7 +488,7 @@ func (t *Tailnet) Error() error {
 }
 
 func (t *Tailnet) CommitConfiguration(from, to config.Configuration) bool {
-	if from.Options.TailscaleDiscoveryEnabled != to.Options.TailscaleDiscoveryEnabled {
+	if inUse(from) != inUse(to) {
 		select {
 		case t.configChanged <- struct{}{}:
 		default:

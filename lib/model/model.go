@@ -1263,8 +1263,15 @@ func (m *model) ClusterConfig(conn protocol.Connection, cm *protocol.ClusterConf
 		w, _ := m.cfg.Modify(func(cfg *config.Configuration) {
 			changedFcfg := make(map[string]config.FolderConfiguration)
 			haveFcfg := cfg.FolderMap()
+			// The device, and the grant of a tailnet device, may have
+			// changed since deviceCfg was read; what applies is the current
+			// configuration.
+			current, _, ok := cfg.Device(deviceID)
+			if !ok || !current.AutoAcceptFolders {
+				return
+			}
 			for _, folder := range cm.Folders {
-				if deviceCfg.IgnoredFolder(folder.ID) {
+				if deviceCfg.IgnoredFolder(folder.ID) || !current.TailnetAllowsFolder(folder.ID) {
 					continue
 				}
 				from, ok := haveFcfg[folder.ID]
@@ -2339,11 +2346,12 @@ func (m *model) AddConnection(conn protocol.Connection, hello protocol.Hello) {
 
 	m.mut.Unlock()
 
-	if (deviceCfg.Name == "" || m.cfg.Options().OverwriteRemoteDevNames) && hello.DeviceName != "" {
+	// A device bound to a tailnet node keeps the name the tailnet gave it.
+	if (deviceCfg.Name == "" || m.cfg.Options().OverwriteRemoteDevNames) && hello.DeviceName != "" && deviceCfg.TailnetNodeID == "" {
 		m.cfg.Modify(func(cfg *config.Configuration) {
 			for i := range cfg.Devices {
 				if cfg.Devices[i].DeviceID == deviceID {
-					if cfg.Devices[i].Name == "" || cfg.Options.OverwriteRemoteDevNames {
+					if (cfg.Devices[i].Name == "" || cfg.Options.OverwriteRemoteDevNames) && cfg.Devices[i].TailnetNodeID == "" {
 						cfg.Devices[i].Name = hello.DeviceName
 					}
 					return

@@ -50,6 +50,7 @@ func TestAuthorizationFrom(t *testing.T) {
 
 	refused := map[string]func(*apitype.WhoIsResponse){
 		"no node":        func(w *apitype.WhoIsResponse) { w.Node = nil },
+		"no node ID":     func(w *apitype.WhoIsResponse) { w.Node.StableID = "" },
 		"expired":        func(w *apitype.WhoIsResponse) { w.Node.Expired = true },
 		"key expiry":     func(w *apitype.WhoIsResponse) { w.Node.KeyExpiry = now.Add(-time.Second) },
 		"other tailnet":  func(w *apitype.WhoIsResponse) { w.Node.Name = "laptop.other.ts.net." },
@@ -255,5 +256,73 @@ func TestCheckConnectionWithoutAutoAccept(t *testing.T) {
 	}
 	if _, ok := cfg.Device(unknown); ok {
 		t.Error("device added with auto-accept off")
+	}
+}
+
+func TestCheckConnectionNeverEnrollsIgnoredDevice(t *testing.T) {
+	tn, api, cfg, _ := newAuthorizingTailnet(t, true)
+	api.setWhoIs("100.64.0.2", granted("n2", "laptop", `{"folders":["shared"]}`))
+	ignored := protocol.DeviceID{1}
+	w, err := cfg.Modify(func(c *config.Configuration) {
+		c.IgnoredDevices = append(c.IgnoredDevices, config.ObservedDevice{ID: ignored})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Wait()
+
+	if _, err := check(t, tn, ignored, ourTailnetAddr, node2Addr); err != nil {
+		t.Error(err)
+	}
+	if _, ok := cfg.Device(ignored); ok {
+		t.Error("an ignored device was added")
+	}
+	if !cfg.IgnoredDevice(ignored) {
+		t.Error("the device is no longer ignored")
+	}
+}
+
+func TestBoundDeviceStaysBound(t *testing.T) {
+	ctx := context.Background()
+	tn, api, cfg, _ := newAuthorizingTailnet(t, true)
+	api.setWhoIs("100.64.0.2", granted("n2", "laptop", `{"folders":["shared"]}`))
+	bound := protocol.DeviceID{1}
+	if _, err := check(t, tn, bound, ourTailnetAddr, node2Addr); err != nil {
+		t.Fatal(err)
+	}
+
+	// It cannot be made an introducer.
+	w, err := cfg.Modify(func(c *config.Configuration) {
+		for i := range c.Devices {
+			if c.Devices[i].DeviceID == bound {
+				c.Devices[i].Introducer = true
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Wait()
+	if dev, _ := cfg.Device(bound); dev.Introducer {
+		t.Error("a bound device became an introducer")
+	}
+
+	// An answer asked for before the last one applied never overwrites it.
+	newer, err := tn.whois(ctx, "100.64.0.2", "tailnet.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := newer
+	older.asked = newer.asked.Add(-time.Second)
+	older.folders = []string{"private", "shared"}
+	newer.folders = nil
+	if err := tn.applyGrant(ctx, bound, newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := tn.applyGrant(ctx, bound, older); err != nil {
+		t.Fatal(err)
+	}
+	if got := sharedWith(cfg, bound); len(got) != 0 {
+		t.Errorf("an older answer shared %v again", got)
 	}
 }

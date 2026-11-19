@@ -94,6 +94,14 @@ func dialContextWithFallback(ctx context.Context, fallback proxy.ContextDialer, 
 	return dialTwicePreferFirst(ctx, proxyDialFudgeAddress, fallback.DialContext, "proxy", "fallback", network, addr)
 }
 
+// IsProxied reports whether conn was dialed through a proxy, in which case
+// its remote address is the requested destination rather than the peer of
+// the socket.
+func IsProxied(conn net.Conn) bool {
+	_, ok := conn.(dialerConn)
+	return ok
+}
+
 // DialContext dials via context and/or directly, depending on how it is configured.
 // If dialing via proxy and allowing fallback, dialing for both happens simultaneously
 // and the proxy connection is returned if successful.

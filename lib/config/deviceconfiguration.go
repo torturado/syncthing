@@ -77,6 +77,13 @@ func (cfg *DeviceConfiguration) prepare(sharedFolders []string) {
 
 	cfg.IgnoredFolders = sortedObservedFolderSlice(ignoredFolders)
 
+	// A device that the tailnet authorized must not bring in further
+	// devices.
+	if cfg.TailnetNodeID != "" && cfg.Introducer {
+		slog.Warn("Device is bound to a tailnet node, removing introducer flag", cfg.DeviceID.LogAttr())
+		cfg.Introducer = false
+	}
+
 	// A device cannot be simultaneously untrusted and an introducer, nor
 	// auto accept folders.
 	if cfg.Untrusted {

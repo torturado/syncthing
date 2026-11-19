@@ -44,7 +44,8 @@ type Grant struct {
 type authorization struct {
 	nodeID  tailcfg.StableNodeID
 	name    string
-	folders []string // sorted, without duplicates
+	folders []string  // sorted, without duplicates
+	asked   time.Time // when the answer was asked for
 }
 
 var errTailnetUnavailable = errors.New("tailscale is unavailable")
@@ -102,8 +103,7 @@ func (t *Tailnet) checkBound(ctx context.Context, dev config.DeviceConfiguration
 	if string(auth.nodeID) != dev.TailnetNodeID {
 		return fmt.Errorf("device is bound to tailnet node %s, but the connection belongs to node %s", dev.TailnetNodeID, auth.nodeID)
 	}
-	t.applyGrant(ctx, dev.DeviceID, auth)
-	return nil
+	return t.applyGrant(ctx, dev.DeviceID, auth)
 }
 
 // authorizeConnection requires a direct connection that arrived on one of our
@@ -135,7 +135,9 @@ func (t *Tailnet) authorizeRemote(ctx context.Context, remote net.Addr) (authori
 	t.mut.Lock()
 	self, domain, terr := t.self, t.domain, t.err
 	t.mut.Unlock()
-	if terr != nil || len(self) == 0 {
+	if terr != nil || len(self) == 0 || domain == "" {
+		// Without our own domain, nodes of other tailnets cannot be told
+		// apart.
 		return authorization{}, errTailnetUnavailable
 	}
 	if slices.Contains(self, remoteAddr.Addr().Unmap()) {
@@ -147,11 +149,14 @@ func (t *Tailnet) authorizeRemote(ctx context.Context, remote net.Addr) (authori
 func (t *Tailnet) whois(ctx context.Context, addr, domain string) (authorization, error) {
 	ctx, cancel := context.WithTimeout(ctx, whoisTimeout)
 	defer cancel()
+	asked := time.Now()
 	who, err := t.api.WhoIs(ctx, addr)
 	if err != nil {
 		return authorization{}, fmt.Errorf("whois %s: %w", addr, err)
 	}
-	return authorizationFrom(who, domain, time.Now())
+	auth, err := authorizationFrom(who, domain, time.Now())
+	auth.asked = asked
+	return auth, err
 }
 
 // authorizationFrom accepts a tagged node of our own tailnet, named in its
@@ -160,7 +165,7 @@ func (t *Tailnet) whois(ctx context.Context, addr, domain string) (authorization
 func authorizationFrom(who *apitype.WhoIsResponse, domain string, now time.Time) (authorization, error) {
 	n := who.Node
 	switch {
-	case n == nil:
+	case n == nil || n.StableID == "":
 		return authorization{}, errors.New("whois returned no node")
 	case tailnetDomain(n.Name) != domain:
 		return authorization{}, fmt.Errorf("tailnet node %s belongs to another tailnet", n.Name)
@@ -197,26 +202,16 @@ func (t *Tailnet) addDevice(ctx context.Context, deviceID protocol.DeviceID, aut
 		return
 	}
 	// Check before modifying, so that the common cases do not commit an
-	// unchanged configuration; the check is repeated inside Modify.
-	for _, dev := range t.cfg.RawCopy().Devices {
-		if dev.DeviceID == deviceID {
-			return
-		}
-		if dev.TailnetNodeID == string(auth.nodeID) {
-			slog.WarnContext(ctx, "Not adding device: its tailnet node is already bound to another device", deviceID.LogAttr(), slog.String("node", string(auth.nodeID)))
-			return
-		}
+	// unchanged configuration; the check is repeated inside Modify, against
+	// the configuration the change applies to.
+	if enrollable(t.cfg.RawCopy(), deviceID, auth) != nil {
+		return
 	}
-	var added, conflict bool
+	var added bool
+	var refused error
 	w, err := t.cfg.Modify(func(cfg *config.Configuration) {
-		for _, dev := range cfg.Devices {
-			if dev.DeviceID == deviceID {
-				return
-			}
-			if dev.TailnetNodeID == string(auth.nodeID) {
-				conflict = true
-				return
-			}
+		if refused = enrollable(*cfg, deviceID, auth); refused != nil {
+			return
 		}
 		dev := cfg.Defaults.Device.Copy()
 		dev.DeviceID = deviceID
@@ -239,18 +234,51 @@ func (t *Tailnet) addDevice(ctx context.Context, deviceID protocol.DeviceID, aut
 		return
 	}
 	w.Wait()
-	switch {
-	case added:
+	if added {
+		t.grantMut.Lock()
+		t.grantSeen[deviceID] = auth.asked
+		t.grantMut.Unlock()
 		slog.InfoContext(ctx, "Added device authorized by the tailnet", deviceID.LogAttr(), slog.String("name", auth.name), slog.String("node", string(auth.nodeID)), slog.Any("folders", auth.folders))
-	case conflict:
-		slog.WarnContext(ctx, "Not adding device: its tailnet node is already bound to another device", deviceID.LogAttr(), slog.String("node", string(auth.nodeID)))
+	} else if refused != nil {
+		slog.DebugContext(ctx, "Not adding device authorized by the tailnet", deviceID.LogAttr(), slogutil.Error(refused))
 	}
 }
 
-// applyGrant makes the folders shared with a bound device match its grant.
-func (t *Tailnet) applyGrant(ctx context.Context, deviceID protocol.DeviceID, auth authorization) {
+var errNodeBound = errors.New("its tailnet node is already bound to another device")
+
+// enrollable reports why the device cannot be added to cfg, if it cannot:
+// auto-accept is off, the device is known or ignored, or its node is bound
+// to another device.
+func enrollable(cfg config.Configuration, deviceID protocol.DeviceID, auth authorization) error {
+	if !cfg.Options.TailscaleAutoAcceptDevices {
+		return errors.New("auto-accept is off")
+	}
+	if slices.ContainsFunc(cfg.IgnoredDevices, func(dev config.ObservedDevice) bool { return dev.ID == deviceID }) {
+		return errors.New("the device is ignored")
+	}
+	for _, dev := range cfg.Devices {
+		if dev.DeviceID == deviceID {
+			return errors.New("the device is known")
+		}
+		if dev.TailnetNodeID == string(auth.nodeID) {
+			slog.Warn("Not adding device: its tailnet node is already bound to another device", deviceID.LogAttr(), slog.String("node", string(auth.nodeID)))
+			return errNodeBound
+		}
+	}
+	return nil
+}
+
+// applyGrant makes the folders shared with a bound device match its grant,
+// unless a newer answer for the device was applied already.
+func (t *Tailnet) applyGrant(ctx context.Context, deviceID protocol.DeviceID, auth authorization) error {
+	t.grantMut.Lock()
+	defer t.grantMut.Unlock()
+	if auth.asked.Before(t.grantSeen[deviceID]) {
+		return nil
+	}
+	t.grantSeen[deviceID] = auth.asked
 	if grantApplied(t.cfg.RawCopy(), deviceID, auth.folders) {
-		return
+		return nil
 	}
 	w, err := t.cfg.Modify(func(cfg *config.Configuration) {
 		for i := range cfg.Devices {
@@ -262,11 +290,11 @@ func (t *Tailnet) applyGrant(ctx context.Context, deviceID protocol.DeviceID, au
 		}
 	})
 	if err != nil {
-		slog.WarnContext(ctx, "Failed to apply tailnet grant", deviceID.LogAttr(), slogutil.Error(err))
-		return
+		return fmt.Errorf("applying the tailnet grant: %w", err)
 	}
 	w.Wait()
 	slog.InfoContext(ctx, "Applied tailnet grant", deviceID.LogAttr(), slog.Any("folders", auth.folders))
+	return nil
 }
 
 func grantApplied(cfg config.Configuration, deviceID protocol.DeviceID, granted []string) bool {
@@ -333,7 +361,9 @@ func (t *Tailnet) reconcile(ctx context.Context) {
 			continue
 		}
 		if isBound {
-			t.applyGrant(ctx, boundID, auth)
+			if err := t.applyGrant(ctx, boundID, auth); err != nil {
+				slog.WarnContext(ctx, "Failed to apply tailnet grant", boundID.LogAttr(), slogutil.Error(err))
+			}
 		} else {
 			t.addDevice(ctx, p.deviceID, auth)
 		}

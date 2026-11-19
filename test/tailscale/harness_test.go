@@ -77,6 +77,8 @@ type harness struct {
 	userID  string
 }
 
+// headscaleConfig is formatted with the IPv4 and IPv6 prefixes and the
+// allocation mode.
 const headscaleConfig = `server_url: http://headscale:8080
 listen_addr: 0.0.0.0:8080
 metrics_listen_addr: 127.0.0.1:9090
@@ -84,9 +86,9 @@ grpc_listen_addr: 127.0.0.1:50443
 noise:
   private_key_path: /var/lib/headscale/noise_private.key
 prefixes:
-  v4: 100.64.0.0/10
-  v6: fd7a:115c:a1e0::/48
-  allocation: sequential
+  v4: %s
+  v6: %s
+  allocation: %s
 derp:
   server:
     enabled: false
@@ -126,6 +128,8 @@ const derpMap = `regions:
 // reaches the LocalAPI through localapiproxy, which cutLocalAPI uses.
 const nodeScript = `set -e
 mkdir -p /var/lib/tailscale /data
+# A seeded identity replaces the one Syncthing would generate.
+if [ -d /seed ]; then cp /seed/cert.pem /seed/key.pem /data/; fi
 if [ -n "$TS_AUTHKEY" ]; then
   ` + tailscaledCommand + ` &
   i=0; until [ -S /var/run/tailscale/real.sock ] || [ $i -gt 100 ]; do i=$((i+1)); sleep 0.1; done
@@ -141,6 +145,13 @@ const tailscaledCommand = `TS_DEBUG_FIREWALL_MODE=nftables tailscaled --state=/v
 
 func newHarness(t *testing.T, policy string) *harness {
 	t.Helper()
+	return newHarnessWithPrefixes(t, policy, "100.64.0.0/10", "fd7a:115c:a1e0::/48", "sequential")
+}
+
+// newHarnessWithPrefixes is newHarness with the tailnet's address prefixes
+// and Headscale's allocation mode ("sequential" or "random").
+func newHarnessWithPrefixes(t *testing.T, policy, v4, v6, allocation string) *harness {
+	t.Helper()
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker is required")
 	}
@@ -150,7 +161,7 @@ func newHarness(t *testing.T, policy string) *harness {
 	h.network = h.prefix
 	h.control = h.prefix + "-headscale"
 
-	h.write("config.yaml", headscaleConfig)
+	h.write("config.yaml", fmt.Sprintf(headscaleConfig, v4, v6, allocation))
 	h.write("derp.yaml", derpMap)
 	h.write("policy.json", policy)
 	h.write("node.sh", nodeScript)
@@ -260,15 +271,37 @@ type node struct {
 
 func (h *harness) startNode(name, authKey string) *node {
 	h.t.Helper()
+	return h.startNodeSeeded(name, authKey, "")
+}
+
+// startNodeWithIdentity starts a node whose Syncthing uses the certificate
+// and key of another node.
+func (h *harness) startNodeWithIdentity(name, authKey string, from *node) *node {
+	h.t.Helper()
+	seed := filepath.Join(h.dir, "seed-"+name)
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	for _, f := range []string{"cert.pem", "key.pem"} {
+		h.docker("cp", from.container+":/data/"+f, filepath.Join(seed, f))
+	}
+	return h.startNodeSeeded(name, authKey, seed)
+}
+
+func (h *harness) startNodeSeeded(name, authKey, seed string) *node {
+	h.t.Helper()
 	n := &node{h: h, name: name, container: h.prefix + "-" + name}
-	h.docker("run", "-d", "--name", n.container, "--hostname", name, "--network", h.network,
+	args := []string{"run", "-d", "--name", n.container, "--hostname", name, "--network", h.network,
 		"--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW", "--device", "/dev/net/tun",
-		"-e", "TS_AUTHKEY="+authKey, "-e", "NODE_NAME="+name,
-		"-v", syncthingBinary+":/usr/local/bin/syncthing:ro",
-		"-v", localAPIProxyBinary+":/usr/local/bin/localapiproxy:ro",
-		"-v", filepath.Join(h.dir, "node.sh")+":/node.sh:ro",
-		"-p", "127.0.0.1::8384",
-		"--entrypoint", "sh", tailscaleImage, "/node.sh")
+		"-e", "TS_AUTHKEY=" + authKey, "-e", "NODE_NAME=" + name,
+		"-v", syncthingBinary + ":/usr/local/bin/syncthing:ro",
+		"-v", localAPIProxyBinary + ":/usr/local/bin/localapiproxy:ro",
+		"-v", filepath.Join(h.dir, "node.sh") + ":/node.sh:ro",
+		"-p", "127.0.0.1::8384"}
+	if seed != "" {
+		args = append(args, "-v", seed+":/seed:ro")
+	}
+	h.docker(append(args, "--entrypoint", "sh", tailscaleImage, "/node.sh")...)
 	h.t.Cleanup(func() {
 		if h.t.Failed() {
 			out, _ := h.dockerErr("exec", n.container, "sh", "-c", "tail -n 80 /var/log/syncthing.log; echo ---; tail -n 30 /var/log/tailscaled.log")
@@ -314,6 +347,17 @@ func (n *node) lanIP() string {
 // deleteNode removes the node from the tailnet, as an admin expelling it.
 func (h *harness) deleteNode(n *node) {
 	h.t.Helper()
+	h.docker("exec", h.control, "headscale", "nodes", "delete", "-i", h.nodeID(n), "--force")
+}
+
+// expireNode expires the node's key, forcing it to authenticate again.
+func (h *harness) expireNode(n *node) {
+	h.t.Helper()
+	h.docker("exec", h.control, "headscale", "nodes", "expire", "-i", h.nodeID(n))
+}
+
+func (h *harness) nodeID(n *node) string {
+	h.t.Helper()
 	var nodes []struct {
 		ID   uint64 `json:"id"`
 		Name string `json:"name"`
@@ -321,11 +365,11 @@ func (h *harness) deleteNode(n *node) {
 	h.jsonOut(&nodes, "exec", h.control, "headscale", "nodes", "list", "-o", "json")
 	for _, hn := range nodes {
 		if hn.Name == n.name {
-			h.docker("exec", h.control, "headscale", "nodes", "delete", "-i", fmt.Sprint(hn.ID), "--force")
-			return
+			return fmt.Sprint(hn.ID)
 		}
 	}
 	h.t.Fatalf("node %s not found in headscale", n.name)
+	return ""
 }
 
 func (n *node) config() config.Configuration {

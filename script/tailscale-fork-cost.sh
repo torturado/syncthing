@@ -13,7 +13,7 @@
 # conflict resolutions (rerere) are not used, so every run starts cold.
 #
 # Usage: script/tailscale-fork-cost.sh <base> <head> <tag>...
-# Example: script/tailscale-fork-cost.sh upstream/main main v2.1.5 v2.1.6 v2.1.7
+# Example: script/tailscale-fork-cost.sh f2ed52347 27fd20d9b v2.1.5 v2.1.6 v2.1.7
 
 set -euo pipefail
 
@@ -22,9 +22,12 @@ head=$2
 shift 2
 
 repo=$(git rev-parse --show-toplevel)
-work=$(mktemp -d "${TMPDIR:-/tmp}/tailscale-fork-cost.XXXXXX")
-packages="./lib/tailscale/... ./lib/discover/... ./lib/connections/... ./lib/config/... ./lib/model/... ./lib/nat/... ./lib/api/... ./lib/syncthing/..."
 commits=$(git -C "$repo" rev-list --reverse "$base..$head")
+if [ -z "$commits" ]; then
+	echo "no commits in $base..$head" >&2
+	exit 1
+fi
+work=$(mktemp -d "${TMPDIR:-/tmp}/tailscale-fork-cost.XXXXXX")
 tailscaleVersion=$(git -C "$repo" show "$head:go.mod" | awk '$1 == "tailscale.com" { print $2 }')
 jsonVersion=$(git -C "$repo" show "$head:go.mod" | awk '$1 == "github.com/go-json-experiment/json" { print $2 }')
 
@@ -52,7 +55,10 @@ for tag in "$@"; do
 			# The dependency lines conflict: start from the release's go.mod
 			# and add the dependency again.
 			git -C "$tree" checkout -q --ours go.mod go.sum
-			(cd "$tree" && go get "tailscale.com@$tailscaleVersion" "github.com/go-json-experiment/json@$jsonVersion" >/dev/null 2>&1 && go mod tidy >/dev/null 2>&1)
+			if ! (cd "$tree" && go get "tailscale.com@$tailscaleVersion" "github.com/go-json-experiment/json@$jsonVersion" && go mod tidy) >"$work/$tag-go-mod.log" 2>&1; then
+				echo "$tag: regenerating go.mod failed, see $work/$tag-go-mod.log and $tree" >&2
+				exit 1
+			fi
 			git -C "$tree" add go.mod go.sum
 			dependencies=regenerated
 		fi
@@ -71,9 +77,11 @@ for tag in "$@"; do
 	if [ -z "$conflicts" ]; then
 		if (cd "$tree" && go run build.go assets >/dev/null 2>&1 && go build ./... >/dev/null 2>&1); then
 			build=ok
-			# shellcheck disable=SC2086 # word splitting of the package list is intended
-			if (cd "$tree" && go test -race -count=1 $packages >"$work/$tag-test.log" 2>&1); then tests=ok; else tests=FAIL; fi
-			if [ "${E2E:-0}" = 1 ]; then
+			if (cd "$tree" && go test -race -count=1 ./lib/... ./cmd/... >"$work/$tag-test.log" 2>&1); then tests=ok; else tests=FAIL; fi
+			if [ "${E2E:-0}" = 1 ] && ! command -v docker >/dev/null; then
+				# The suite skips itself without Docker, which would read as a pass.
+				e2e="no docker"
+			elif [ "${E2E:-0}" = 1 ]; then
 				if (cd "$tree" && go test -tags tailscale_e2e -count=1 -timeout 30m ./test/tailscale >"$work/$tag-e2e.log" 2>&1); then e2e=ok; else e2e=FAIL; fi
 			fi
 		else

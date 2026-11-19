@@ -116,8 +116,13 @@ Out of scope:
   additional connections alike.
 
   The node that `WhoIs` names must also be the node that our peer table held
-  for the remote address when the check began. If the address changed hands,
-  the connection is not authorized, and an unknown device stays pending.
+  for the remote address, **since before the connection was established**.
+  Our table only ever lags tailscaled, and the replies of a TLS handshake go
+  to the address's current owner. So a node that held the address before the
+  handshake, and still holds it when `WhoIs` answers, is the node that
+  completed the handshake. If the address changed hands, or our table learned
+  of its owner only after the connection began, the connection is not
+  authorized, and an unknown device stays pending.
 
   The configuration change that adds a device checks once more, inside the
   change, that the device is not known, not ignored and that its node is not
@@ -269,31 +274,18 @@ the peer table held when the probe ran. Connections are held to the same rule
 (R5): `WhoIs` must name the node that the peer table held for the remote
 address when the check began.
 
-A narrow race remains on incoming connections. Our tailscaled may move an
-address to a new node after accepting the old owner's handshake, but before
-our peer table catches up.
+The continuity rule in R5 closes the race on incoming connections. Suppose our
+tailscaled moves an address to a new node after accepting the old owner's
+handshake. Our peer table then learns of the new owner only after that
+connection was established, so the connection is refused. This matters because
+a socket admitted under the wrong node could deliver buffered index entries,
+including deletions and directories, which the puller applies without a block
+request.
 
-In that case the old owner's device can be bound to the new owner's node, and
-its socket can even be admitted. That still gives no one any data:
-
-- **Nothing reaches the old owner.** Once its node is gone, our tailscaled
-  drops its packets, and our replies on that socket are routed to the new
-  owner. The new owner has no such connection, so its kernel resets it.
-- **The new owner learns nothing.** The replies are encrypted for the old
-  owner's TLS session.
-- **Its later connections are refused**, because they come from another node
-  (R4, R5).
-- **The new owner cannot use the device**, because it does not hold the
-  device's key (R1).
-- **Buffered messages change nothing local.** Our side may still process
-  messages that the old owner sent before it was cut off, such as its cluster
-  configuration and index entries. Those describe the remote device's files.
-  They write nothing local, because pulling a file needs a block request that
-  the dead socket cannot answer.
-
-The lasting effect is that the new owner's own device stays pending until the
-stale binding is removed. Reassignment within that window requires deleting a
-node and enrolling a new one in the same few milliseconds.
+The cost of the rule is that a node which has just joined may have its first
+connections refused until our peer table lists it. That takes about a second
+after tailscaled reports the change, and the node's next dial, or our probe of
+it, enrolls it.
 
 ### S4. tailscaled is stopped, has crashed, or is unhealthy
 
@@ -379,7 +371,7 @@ the configuration cannot hold such a share.
 | A new device with the grant syncs 100 % with no manual steps. | Enrollment | A tagged node with the grant starts with an empty configuration plus the options. It reaches 100 % completion on the granted folder, and the seeded file arrives with the same content. |
 | A device without the grant receives no folders. | S1b | A tagged node without the grant stays pending on the others. No folder is shared with it, and no file reaches it. |
 | An expelled device loses its connection in under a minute. | S2a, S2b, S2c | `headscale nodes delete`, `headscale nodes expire`, and separately a policy that removes the grant. Measure the time until the surviving peer reports the device disconnected. Timing starts at the control-plane action, so it also bounds the time our tailscaled takes to observe the change. |
-| An address is reused. | S3 | **Unit test, deterministic,** with a fake LocalAPI that moves one address to a new node. While the peer table still names the old node and `WhoIs` already names the new one, an unknown device that connects from the address stays pending. Once the table names the new node, the old binding is refused from that address, and the new owner's device enrolls on a fresh connection. **End-to-end:** Headscale is limited to a /30 and a /126 with random allocation, so the next node gets the expelled node's addresses. That node also presents the expelled device's certificate, and it is refused. |
+| An address is reused. | S3 | **Unit test, deterministic,** with a fake LocalAPI that moves one address to a new node. While the peer table still names the old node and `WhoIs` already names the new one, an unknown device that connects from the address stays pending. A connection established before the table learned of the new owner is refused. Once the table names the new node, the old binding is refused from that address, and the new owner's device enrolls on a fresh connection. **End-to-end:** Headscale is limited to a /30 and a /126 with random allocation, so the next node gets the expelled node's addresses. That node also presents the expelled device's certificate, and it is refused. |
 | With tailscaled stopped, Syncthing keeps its known devices and accepts no new ones. | S4a | **LocalAPI cut, while the tailnet still carries traffic:** a proxy in front of the socket closes every LocalAPI connection, including the IPN stream and pooled HTTP connections, and refuses new ones. Bound devices disconnect, and a tailnet-authorized new device that connects over the tailnet stays pending. **tailscaled stopped:** a device configured by hand keeps syncing over the LAN, and no device is added or removed. |
 | Listen-only. | S5 | The LAN address refuses connections, the peer reaches the node over the tailnet, and with tailscaled stopped nothing listens. |
 | No improper access. | All | Every scenario checks that each node's folder list and connected devices contain exactly what the grants allow. |

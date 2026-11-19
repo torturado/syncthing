@@ -173,7 +173,8 @@ func (opts OptionsConfiguration) RequiresRestartOnly() OptionsConfiguration {
 }
 
 func (opts OptionsConfiguration) IsStunDisabled() bool {
-	return opts.StunKeepaliveMinS < 1 || opts.StunKeepaliveStartS < 1 || !opts.NATEnabled
+	// Listening only on the tailnet means no NAT traversal, STUN included.
+	return opts.StunKeepaliveMinS < 1 || opts.StunKeepaliveStartS < 1 || !opts.NATEnabled || opts.TailscaleListenOnly
 }
 
 func (opts OptionsConfiguration) ListenAddresses() []string {

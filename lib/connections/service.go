@@ -1046,7 +1046,7 @@ func (s *service) listenAddresses(cfg config.Configuration) []string {
 	var bound []string
 	for _, addr := range addrs {
 		uri, err := url.Parse(addr)
-		if err != nil || uri.Port() == "" {
+		if err != nil {
 			continue
 		}
 		family := ""
@@ -1058,6 +1058,12 @@ func (s *service) listenAddresses(cfg config.Configuration) []string {
 			family = "6"
 		default:
 			continue
+		}
+		// Without a port the listeners use the default one, and so does this.
+		if strings.HasPrefix(uri.Scheme, "tcp") {
+			uri = fixupPort(uri, config.DefaultTCPPort)
+		} else {
+			uri = fixupPort(uri, config.DefaultQUICPort)
 		}
 		for _, ip := range self {
 			if family == "4" && !ip.Is4() || family == "6" && !ip.Is6() {

@@ -304,15 +304,18 @@ func (t *Tailnet) startProbes(ctx context.Context, probed chan<- struct{}) {
 }
 
 func (t *Tailnet) probe(ctx context.Context, p *peer, probed chan<- struct{}) {
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
-	defer cancel()
-	// Try each address in turn: a peer may serve BEP on only one family.
+	// Try each address in turn, each with its own deadline: a peer may
+	// serve BEP on only one family, and an address that drops packets must
+	// not use up the time of the next one.
 	var id protocol.DeviceID
 	var addr string
 	var err error
 	for _, ip := range p.addrs {
 		addr = netip.AddrPortFrom(ip, t.port).String()
-		if id, err = probeDeviceID(ctx, t.tlsCfg, addr); err == nil {
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		id, err = probeDeviceID(probeCtx, t.tlsCfg, addr)
+		cancel()
+		if err == nil {
 			break
 		}
 	}

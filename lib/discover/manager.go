@@ -135,8 +135,8 @@ func (*manager) Error() error {
 }
 
 func (m *manager) ChildErrors() map[string]error {
-	children := make(map[string]error, len(m.finders))
 	m.mut.RLock()
+	children := make(map[string]error, len(m.finders))
 	for _, f := range m.finders {
 		children[f.String()] = f.Error()
 	}

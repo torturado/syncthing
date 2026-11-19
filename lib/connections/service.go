@@ -210,7 +210,16 @@ type service struct {
 	listeners      map[string]genericListener
 	listenerTokens map[string]suture.ServiceToken
 
-	tailnetChecks sync.Map // connection ID -> struct{}, while a re-check runs
+	// Connections of devices bound to a tailnet node, by connection ID, and
+	// those whose re-check is running.
+	tailnetConns  sync.Map // connection ID -> tailnetConn
+	tailnetChecks sync.Map // connection ID -> struct{}
+}
+
+// tailnetConn is what re-checking a connection of a bound device needs.
+type tailnetConn struct {
+	deviceID protocol.DeviceID
+	conn     internalConn
 }
 
 // NewService returns the connection service. tailnet may be nil, in which
@@ -461,11 +470,17 @@ func (s *service) handleHellos(ctx context.Context) error {
 		// A device bound to a tailnet node is only admitted on a connection
 		// that the tailnet authorized for that node, with no outage since;
 		// the device may have been added by another connection while this
-		// one was in its Hello.
-		if deviceCfg.TailnetNodeID != "" && !s.tailnetAdmits(deviceCfg, c) {
-			slog.WarnContext(ctx, "Connection rejected: the tailnet did not authorize it for the device's node", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slog.Any("type", c.Type()))
-			c.Close()
-			continue
+		// one was in its Hello. The connection is registered for re-checks
+		// first, so that an outage sweep either sees it or ran before this
+		// check, which then sees the new outage epoch.
+		if deviceCfg.TailnetNodeID != "" {
+			s.tailnetConns.Store(c.connectionID, tailnetConn{deviceID: remoteID, conn: c})
+			if !s.tailnetAdmits(deviceCfg, c) {
+				s.tailnetConns.Delete(c.connectionID)
+				slog.WarnContext(ctx, "Connection rejected: the tailnet did not authorize it for the device's node", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slog.Any("type", c.Type()))
+				c.Close()
+				continue
+			}
 		}
 
 		// Verify the name on the certificate. By default we set it to
@@ -497,6 +512,7 @@ func (s *service) handleHellos(ctx context.Context) error {
 		s.accountAddedConnection(protoConn, hello, s.cfg.Options().ConnectionPriorityUpgradeThreshold)
 		go func() {
 			<-protoConn.Closed()
+			s.tailnetConns.Delete(c.connectionID)
 			s.accountRemovedConnection(protoConn)
 			s.dialNowDevicesMut.Lock()
 			s.dialNowDevices[remoteID] = struct{}{}
@@ -520,34 +536,35 @@ func (s *service) recheckTailnetConnections(ctx context.Context) error {
 			return ctx.Err()
 		case <-s.tailnet.Updates():
 		}
-		// During an outage every bound connection is closed at once.
-		// Otherwise each connection is checked on its own, so that a slow
-		// answer or a slow configuration commit holds up neither the other
-		// connections nor the next update; a connection whose previous
-		// check is still running is skipped.
-		_, available := s.tailnet.Available()
-		for _, dev := range s.cfg.RawCopy().Devices {
-			if dev.TailnetNodeID == "" {
-				continue
+		// A connection is closed at once, without the BEP farewell, when an
+		// outage has come since it was authorized. Otherwise each one is
+		// checked on its own, so that a slow answer or a slow configuration
+		// commit holds up neither the other connections nor the next
+		// update; a connection whose previous check is still running is
+		// skipped.
+		epoch, available := s.tailnet.Available()
+		s.tailnetConns.Range(func(id, value any) bool {
+			tc, ok := value.(tailnetConn)
+			if !ok {
+				return true
 			}
-			for _, conn := range s.connectionsForDevice(dev.DeviceID) {
-				if !available {
-					slog.InfoContext(ctx, "Closing connection no longer authorized by the tailnet", dev.DeviceID.LogAttr(), slogutil.Address(conn.RemoteAddr()), slogutil.Error(errTailnetUnavailable))
-					go conn.Close(errTailnetUnavailable)
-					continue
-				}
-				if _, running := s.tailnetChecks.LoadOrStore(conn.ConnectionID(), struct{}{}); running {
-					continue
-				}
-				go func() {
-					defer s.tailnetChecks.Delete(conn.ConnectionID())
-					if err := s.tailnet.CheckEstablished(ctx, dev.DeviceID, conn.RemoteAddr(), conn.EstablishedAt()); err != nil {
-						slog.InfoContext(ctx, "Closing connection no longer authorized by the tailnet", dev.DeviceID.LogAttr(), slogutil.Address(conn.RemoteAddr()), slogutil.Error(err))
-						conn.Close(err)
-					}
-				}()
+			if !available || tc.conn.tailnetEpoch != epoch {
+				slog.InfoContext(ctx, "Closing connection no longer authorized by the tailnet", tc.deviceID.LogAttr(), slogutil.Address(tc.conn.RemoteAddr()), slogutil.Error(errTailnetUnavailable))
+				tc.conn.Close()
+				return true
 			}
-		}
+			if _, running := s.tailnetChecks.LoadOrStore(id, struct{}{}); running {
+				return true
+			}
+			go func() {
+				defer s.tailnetChecks.Delete(id)
+				if err := s.tailnet.CheckEstablished(ctx, tc.deviceID, tc.conn.RemoteAddr(), tc.conn.handshakeStarted); err != nil {
+					slog.InfoContext(ctx, "Closing connection no longer authorized by the tailnet", tc.deviceID.LogAttr(), slogutil.Address(tc.conn.RemoteAddr()), slogutil.Error(err))
+					tc.conn.Close()
+				}
+			}()
+			return true
+		})
 	}
 }
 
@@ -1491,12 +1508,6 @@ func (c *deviceConnectionTracker) accountAddedConnection(conn protocol.Connectio
 
 	// Close any connections we no longer want to retain.
 	c.closeWorsePriorityConnectionsLocked(d, conn.Priority()-upgradeThreshold)
-}
-
-func (c *deviceConnectionTracker) connectionsForDevice(d protocol.DeviceID) []protocol.Connection {
-	c.connectionsMut.Lock()
-	defer c.connectionsMut.Unlock()
-	return slices.Clone(c.connections[d])
 }
 
 func (c *deviceConnectionTracker) accountRemovedConnection(conn protocol.Connection) {

@@ -315,6 +315,20 @@ func TestBoundDeviceStaysBound(t *testing.T) {
 		t.Error("a bound device became an introducer")
 	}
 
+	// An answer asked for before an outage applies nothing, even once the
+	// tailnet is back.
+	stale, err := tn.whois(ctx, "100.64.0.2", "tailnet.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.folders = []string{"private", "shared"}
+	tn.mut.Lock()
+	tn.epoch++
+	tn.mut.Unlock()
+	if err := tn.applyGrant(ctx, bound, stale); err == nil {
+		t.Error("a grant asked for before an outage was applied")
+	}
+
 	// An answer asked for before the last one applied never overwrites it.
 	newer, err := tn.whois(ctx, "100.64.0.2", "tailnet.test")
 	if err != nil {

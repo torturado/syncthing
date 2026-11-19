@@ -1,0 +1,6 @@
+{
+  "hooks": {
+    "PreToolUse": [ { "hooks": [ { "type": "command", "command": "/bin/sh '/home/user/.orca/agent-hooks/codex-hook.sh'", "timeout": 10 } ] } ],
+    "SessionStart": [ { "hooks": [ { "type": "command", "command": "bash '/home/user/.codex/herdr-agent-state.sh' session" } ] } ]
+  }
+}

@@ -1,0 +1,7 @@
+[mcp_servers.search]
+url = "https://search.example.com/mcp"
+
+[mcp_servers.deploy]
+url = "https://deploy.example.ts.net/mcp"
+
+[hooks]

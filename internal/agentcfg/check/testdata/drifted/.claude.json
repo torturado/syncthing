@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "search": { "type": "http", "url": "https://search.example.com/mcp", "headers": { "X-API-Key": "fake-search-key" } }
+  },
+  "projects": {
+    "/home/user": {
+      "mcpServers": {
+        "deploy": { "type": "http", "url": "https://deploy.example.ts.net/mcp", "headers": { "Authorization": "Bearer fake-deploy-token" } },
+        "research": { "type": "http", "url": "https://research.example.com/mcp" }
+      }
+    }
+  }
+}

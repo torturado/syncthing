@@ -1,0 +1,4 @@
+{
+  "env": { "ANTHROPIC_AUTH_TOKEN": "${PROXY_TOKEN}", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1" },
+  "enabledMcpjsonServers": ["search", "deploy"]
+}

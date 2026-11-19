@@ -9,6 +9,12 @@ project trust, session history and per-repository `.mcp.json` files are never re
 
 Supported agents: Claude Code and Codex CLI.
 
+## Install
+
+```sh
+go install github.com/torturado/agentcfg/cmd/agentcfg@latest
+```
+
 ## Usage
 
 ```sh
@@ -23,8 +29,8 @@ SSH) to detect drift.
 ## Spec
 
 ```toml
-[mcp_servers.keenable]
-url = "https://api.keenable.ai/mcp"
+[mcp_servers.search]
+url = "https://search.example.com/mcp"
 
 [mcp_servers.local-files]
 command = "mcp-files"
@@ -55,3 +61,18 @@ the file and which variables it references.
 |---|---|
 | Claude Code | `~/.claude/settings.json`, `~/.claude.json` (user and local MCP scopes only), `~/.mcp.json`, `/etc/claude-code/managed-settings.json`, `managed-settings.d/`, `managed-mcp.json`. Honors `CLAUDE_CONFIG_DIR`. |
 | Codex CLI | `~/.codex/config.toml` (ignoring the `hooks.state` trust store), `~/.codex/hooks.json`, `/etc/codex/config.toml`. Honors `CODEX_HOME`. |
+
+## Development
+
+```sh
+go test ./...
+```
+
+The fixtures in `internal/check/testdata` are homes in two states: `clean` matches the spec with
+every credential referenced, and `drifted` reproduces common drift (hooks reinstalled by another
+tool, an extra MCP server in a local scope, credentials written in the files, a changed URL).
+All values in them are fake.
+
+## License
+
+MIT

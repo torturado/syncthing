@@ -89,6 +89,10 @@ type OptionsConfiguration struct {
 	// syncthing.net/cap/syncthing grant, instead of leaving them pending.
 	// This delegates device and folder authorization to the tailnet policy.
 	TailscaleAutoAcceptDevices bool `json:"tailscaleAutoAcceptDevices" xml:"tailscaleAutoAcceptDevices" default:"false"`
+	// Listen only on this node's tailnet addresses: TCP and QUIC listeners
+	// are bound to them, relay listeners and NAT port mappings are not
+	// used, and nothing listens while there is no tailnet address.
+	TailscaleListenOnly bool `json:"tailscaleListenOnly" xml:"tailscaleListenOnly" default:"false"`
 
 	// Legacy deprecated
 	DeprecatedUPnPEnabled        bool     `json:"-" xml:"upnpEnabled,omitempty"`        // Deprecated: Do not use.

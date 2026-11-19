@@ -414,3 +414,97 @@ func TestAddressReuse(t *testing.T) {
 		t.Error("node-a did not refuse the reused address for the bound device")
 	}
 }
+
+// listeners returns the addresses the node listens on.
+func listeners(n *node) []string {
+	var status struct {
+		ConnectionServiceStatus map[string]struct {
+			LANAddresses []string `json:"lanAddresses"`
+		} `json:"connectionServiceStatus"`
+	}
+	n.rest(http.MethodGet, "/rest/system/status", nil, &status)
+	var addrs []string
+	for uri := range status.ConnectionServiceStatus {
+		addrs = append(addrs, uri)
+	}
+	slices.Sort(addrs)
+	return addrs
+}
+
+func reachable(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// TestListenOnly: with tailscaleListenOnly the node listens on its tailnet
+// addresses only, and on nothing at all while tailscaled is down.
+func TestListenOnly(t *testing.T) {
+	h := newHarness(t, networkOnly)
+	tagged := h.authKey("tag:syncthing")
+	a := h.startNode("node-a", tagged)
+	b := h.startNode("node-b", tagged)
+	a.addDevice(b)
+	b.addDevice(a)
+	a.addFolder("shared", b)
+	b.addFolder("shared", a)
+	enableDiscovery(b)
+	a.modifyConfig(func(cfg *config.Configuration) {
+		cfg.Options.TailscaleDiscoveryEnabled = true
+		cfg.Options.TailscaleListenOnly = true
+		// Also ask for a relay listener, which listen-only must drop.
+		cfg.Options.RawListenAddresses = []string{"tcp://0.0.0.0:22000", "quic://0.0.0.0:22000", "dynamic+https://relays.syncthing.net/endpoint"}
+		cfg.Options.RelaysEnabled = true
+	})
+
+	var want []string
+	for _, ip := range a.tailnetIPs() {
+		hostPort := net.JoinHostPort(ip, "22000")
+		want = append(want, "tcp://"+hostPort, "quic://"+hostPort)
+	}
+	slices.Sort(want)
+	waitFor(t, "node-a to listen on its tailnet addresses", time.Minute, func() bool {
+		return slices.Equal(listeners(a), want)
+	})
+	// The listener on all interfaces stops asynchronously.
+	lan := net.JoinHostPort(a.lanIP(), "22000")
+	waitFor(t, "node-a to stop listening on its LAN address", 10*time.Second, func() bool {
+		return !reachable(lan)
+	})
+
+	// node-b only dials; the connection must reach node-a over the tailnet.
+	b.modifyConfig(func(cfg *config.Configuration) {
+		cfg.Options.RawListenAddresses = []string{""}
+	})
+	waitFor(t, "node-b to connect to node-a over the tailnet", time.Minute, func() bool {
+		_, ok := b.connectedTo(a)
+		return ok
+	})
+	conn, _ := b.connectedTo(a)
+	if host, _, _ := net.SplitHostPort(conn.Address); !slices.Contains(a.tailnetIPs(), host) {
+		t.Errorf("node-b reached node-a at %s, not a tailnet address", conn.Address)
+	}
+
+	// Without tailscaled there is no tailnet address, so nothing listens;
+	// listen-only never falls back to all interfaces.
+	ips := a.tailnetIPs()
+	a.exec("pkill", "tailscaled")
+	waitFor(t, "node-a to stop listening", time.Minute, func() bool {
+		return len(listeners(a)) == 0
+	})
+	time.Sleep(5 * time.Second)
+	if reachable(lan) {
+		t.Error("node-a listens on its LAN address while tailscaled is down")
+	}
+
+	a.exec("sh", "-c", tailscaledCommand+" &")
+	waitFor(t, "node-a to listen on its tailnet addresses again", 2*time.Minute, func() bool {
+		return slices.Equal(listeners(a), want)
+	})
+	if got := a.tailnetIPs(); !slices.Equal(got, ips) {
+		t.Errorf("node-a came back with tailnet addresses %v, had %v", got, ips)
+	}
+}

@@ -36,6 +36,7 @@ import (
 
 type fakeTailnet struct {
 	nodes       map[string][]netip.Addr
+	addrs       []netip.Addr
 	epoch       uint64
 	unavailable bool
 }
@@ -51,6 +52,8 @@ func (fakeTailnet) CheckEstablished(context.Context, protocol.DeviceID, net.Addr
 func (f fakeTailnet) NodeAddresses(node string) []netip.Addr { return f.nodes[node] }
 
 func (f fakeTailnet) Available() (uint64, bool) { return f.epoch, !f.unavailable }
+
+func (f fakeTailnet) Addresses() []netip.Addr { return f.addrs }
 
 func (fakeTailnet) Updates() <-chan struct{} { return nil }
 
@@ -674,5 +677,45 @@ func TestHandleHellosRequiresTailnetNodeForBoundDevice(t *testing.T) {
 		t.Fatal("bound device admitted on a connection the tailnet did not authorize")
 	case <-time.After(5 * time.Second):
 		t.Fatal("connection neither closed nor admitted")
+	}
+}
+
+func TestTailnetListenAddresses(t *testing.T) {
+	tailnet := fakeTailnet{addrs: []netip.Addr{netip.MustParseAddr("100.64.0.1"), netip.MustParseAddr("fd7a:115c:a1e0::1")}}
+	cases := []struct {
+		listen     []string
+		listenOnly bool
+		tailnet    fakeTailnet
+		want       []string
+	}{
+		{
+			// The default listeners, relay included, become TCP and QUIC on
+			// each tailnet address.
+			listen: []string{"default"}, listenOnly: true, tailnet: tailnet,
+			want: []string{"quic://100.64.0.1:22000", "quic://[fd7a:115c:a1e0::1]:22000", "tcp://100.64.0.1:22000", "tcp://[fd7a:115c:a1e0::1]:22000"},
+		},
+		{
+			listen: []string{"tcp4://0.0.0.0:22001", "quic6://[::]:22002"}, listenOnly: true, tailnet: tailnet,
+			want: []string{"quic6://[fd7a:115c:a1e0::1]:22002", "tcp4://100.64.0.1:22001"},
+		},
+		{
+			// No tailnet address: nothing listens.
+			listen: []string{"default"}, listenOnly: true,
+			want: nil,
+		},
+		{
+			listen: []string{"tcp://0.0.0.0:22000"}, tailnet: tailnet,
+			want: []string{"tcp://0.0.0.0:22000"},
+		},
+	}
+	for _, tc := range cases {
+		cfg := config.New(protocol.LocalDeviceID)
+		cfg.Options.RawListenAddresses = tc.listen
+		cfg.Options.TailscaleListenOnly = tc.listenOnly
+		got := (&service{tailnet: tc.tailnet}).listenAddresses(cfg)
+		slices.Sort(got)
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("listen %v, listen-only %v, tailnet %v: got %v, want %v", tc.listen, tc.listenOnly, tc.tailnet.addrs, got, tc.want)
+		}
 	}
 }

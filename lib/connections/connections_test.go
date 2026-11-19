@@ -144,6 +144,21 @@ func TestSweepTailnetConnections(t *testing.T) {
 	}
 }
 
+func TestListenOnlyDialsDoNotReuseListeners(t *testing.T) {
+	// Registry.Get falls back to any compatible socket, and in listen-only
+	// mode every listening socket is bound to a tailnet address.
+	listening := registry.New()
+	listening.Register("tcp", &net.TCPAddr{IP: net.ParseIP("100.64.0.1"), Port: 22000})
+	var opts config.OptionsConfiguration
+	if dialRegistry(opts, listening).Get("tcp", func(any) bool { return false }) == nil {
+		t.Error("without listen-only, dials should be able to reuse listening sockets")
+	}
+	opts.TailscaleListenOnly = true
+	if got := dialRegistry(opts, listening).Get("tcp", func(any) bool { return false }); got != nil {
+		t.Errorf("listen-only dial would reuse the tailnet-bound socket %v", got)
+	}
+}
+
 func TestFixupPort(t *testing.T) {
 	cases := [][2]string{
 		{"tcp://1.2.3.4:5", "tcp://1.2.3.4:5"},

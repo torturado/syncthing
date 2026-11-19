@@ -46,6 +46,7 @@ type authorization struct {
 	name    string
 	folders []string  // sorted, without duplicates
 	asked   time.Time // when the answer was asked for
+	epoch   uint64    // the outage epoch when it was asked for
 }
 
 var errTailnetUnavailable = errors.New("tailscale is unavailable")
@@ -219,13 +220,22 @@ func (t *Tailnet) whois(ctx context.Context, addr, domain string) (authorization
 	ctx, cancel := context.WithTimeout(ctx, whoisTimeout)
 	defer cancel()
 	asked := time.Now()
+	epoch, _ := t.Available()
 	who, err := t.api.WhoIs(ctx, addr)
 	if err != nil {
 		return authorization{}, fmt.Errorf("whois %s: %w", addr, err)
 	}
 	auth, err := authorizationFrom(who, domain, time.Now())
 	auth.asked = asked
+	auth.epoch = epoch
 	return auth, err
+}
+
+// current reports whether the authorization still stands: the tailnet is
+// available and has not been unavailable since the answer was asked for.
+func (t *Tailnet) current(auth authorization) bool {
+	epoch, ok := t.Available()
+	return ok && epoch == auth.epoch
 }
 
 // authorizationFrom accepts a tagged node of our own tailnet, named in its
@@ -287,8 +297,9 @@ func (t *Tailnet) addDevice(ctx context.Context, deviceID protocol.DeviceID, aut
 		if refused = enrollable(*cfg, deviceID, auth); refused != nil {
 			return
 		}
-		// No binding may be created while the tailnet is unavailable.
-		if !t.available() {
+		// No binding may be created from an answer that an outage came
+		// after.
+		if !t.current(auth) {
 			refused = errTailnetUnavailable
 			return
 		}
@@ -352,6 +363,9 @@ func (t *Tailnet) applyGrant(ctx context.Context, deviceID protocol.DeviceID, au
 	defer t.grantMut.Unlock()
 	if auth.asked.Before(t.grantSeen[deviceID]) {
 		return nil
+	}
+	if !t.current(auth) {
+		return errTailnetUnavailable
 	}
 	if grantApplied(t.cfg.RawCopy(), deviceID, auth.folders) {
 		t.noteGrantLocked(deviceID, auth.asked)

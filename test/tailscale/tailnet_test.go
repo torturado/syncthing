@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -434,6 +435,30 @@ func listeners(n *node) []string {
 	return addrs
 }
 
+// boundSockets returns the local addresses of the node's TCP listening
+// sockets and UDP sockets on port 22000, as the kernel reports them.
+func boundSockets(n *node) (tcp, udp []string) {
+	n.h.t.Helper()
+	for _, proto := range []string{"t", "u"} {
+		out := n.exec("netstat", "-lnW"+proto)
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 4 || !strings.HasSuffix(fields[3], ":22000") {
+				continue
+			}
+			host := strings.TrimSuffix(fields[3], ":22000")
+			if proto == "t" {
+				tcp = append(tcp, host)
+			} else {
+				udp = append(udp, host)
+			}
+		}
+	}
+	slices.Sort(tcp)
+	slices.Sort(udp)
+	return tcp, udp
+}
+
 func reachable(addr string) bool {
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
@@ -481,6 +506,14 @@ func TestListenOnly(t *testing.T) {
 	waitFor(t, "node-a to listen on its tailnet addresses", time.Minute, func() bool {
 		return slices.Equal(listeners(a), want)
 	})
+	// The kernel must agree: TCP and UDP sockets on port 22000 exist on the
+	// tailnet addresses and nowhere else.
+	tailnetHosts := slices.Clone(a.tailnetIPs())
+	slices.Sort(tailnetHosts)
+	waitFor(t, "node-a's sockets to be bound to its tailnet addresses only", 2*time.Minute, func() bool {
+		tcp, udp := boundSockets(a)
+		return slices.Equal(tcp, tailnetHosts) && slices.Equal(udp, tailnetHosts)
+	})
 	// The listener on all interfaces stops asynchronously.
 	lan := net.JoinHostPort(a.lanIP(), "22000")
 	waitFor(t, "node-a to stop listening on its LAN address", 10*time.Second, func() bool {
@@ -503,16 +536,17 @@ func TestListenOnly(t *testing.T) {
 	// Without tailscaled there is no tailnet address, so nothing listens;
 	// listen-only never falls back to all interfaces.
 	ips := a.tailnetIPs()
-	a.exec("pkill", "tailscaled")
+	a.stopTailscaled()
 	waitFor(t, "node-a to stop listening", time.Minute, func() bool {
-		return len(listeners(a)) == 0
+		tcp, udp := boundSockets(a)
+		return len(listeners(a)) == 0 && len(tcp) == 0 && len(udp) == 0
 	})
 	time.Sleep(5 * time.Second)
 	if reachable(lan) {
 		t.Error("node-a listens on its LAN address while tailscaled is down")
 	}
 
-	a.exec("sh", "-c", tailscaledCommand+" &")
+	a.restartTailscaled()
 	waitFor(t, "node-a to listen on its tailnet addresses again", 2*time.Minute, func() bool {
 		return slices.Equal(listeners(a), want)
 	})

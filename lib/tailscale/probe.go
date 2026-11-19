@@ -50,12 +50,14 @@ func probeDeviceID(ctx context.Context, tlsCfg *tls.Config, addr string) (protoc
 	}
 	defer conn.Close()
 
+	// Only errProbeComplete proves that the peer finished its side of the
+	// handshake and asked for a client certificate, as BEP listeners do.
 	err = tls.Client(conn, cfg).HandshakeContext(ctx)
-	if err != nil && !errors.Is(err, errProbeComplete) {
+	if !errors.Is(err, errProbeComplete) {
+		if err == nil {
+			err = errors.New("peer did not request a client certificate")
+		}
 		return protocol.EmptyDeviceID, err
-	}
-	if leaf == nil {
-		return protocol.EmptyDeviceID, errors.New("peer presented no certificate")
 	}
 	return protocol.NewDeviceID(leaf), nil
 }

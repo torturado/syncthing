@@ -98,7 +98,8 @@ type Tailnet struct {
 	self    []netip.Addr // our tailnet addresses; empty while unavailable
 	domain  string       // our tailnet's MagicDNS domain
 	peers   map[tailcfg.StableNodeID]*peer
-	probing int // probes in flight
+	probing int    // probes in flight
+	epoch   uint64 // grows each time the tailnet stops being available
 
 	// grantMut serializes configuration writes from tailnet answers;
 	// grantSeen holds, per device, when the answer last applied was asked
@@ -270,6 +271,7 @@ func (t *Tailnet) refresh(ctx context.Context) error {
 	t.mut.Lock()
 	defer t.mut.Unlock()
 	defer t.notifyUpdate()
+	defer t.countOutageLocked(t.availableLocked())
 	t.setErrLocked(err)
 	t.self = nil
 	if err == nil {
@@ -392,9 +394,18 @@ func (t *Tailnet) reset(err error) {
 	t.mut.Lock()
 	defer t.mut.Unlock()
 	defer t.notifyUpdate()
+	defer t.countOutageLocked(t.availableLocked())
 	t.setErrLocked(err)
 	t.self = nil
 	t.peers = nil
+}
+
+// countOutageLocked starts a new outage epoch if the tailnet was available
+// and no longer is.
+func (t *Tailnet) countOutageLocked(wasAvailable bool) {
+	if wasAvailable && !t.availableLocked() {
+		t.epoch++
+	}
 }
 
 func (t *Tailnet) notifyUpdate() {

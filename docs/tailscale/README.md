@@ -120,7 +120,11 @@ The device stays in the configuration and reconnects if its node is authorized
 again. Removing a folder from the grant unshares it.
 
 If the LocalAPI cannot be reached, bound devices are refused and no device is
-added. Devices configured by hand are never affected. To turn a bound device
+added.
+
+Syncthing never authorizes a connection that went through a proxy. If you set
+`all_proxy`, exclude the tailnet ranges with
+`no_proxy=100.64.0.0/10,fd7a:115c:a1e0::/48`, or bound devices cannot connect. Devices configured by hand are never affected. To turn a bound device
 into an ordinary one, clear its `tailnetNodeID` in the advanced settings.
 
 ## End-to-end tests

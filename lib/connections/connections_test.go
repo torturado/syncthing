@@ -15,6 +15,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -30,6 +31,43 @@ import (
 	"github.com/syncthing/syncthing/lib/protocol"
 	"github.com/syncthing/syncthing/lib/tlsutil"
 )
+
+type fakeTailnet struct {
+	nodes map[string][]netip.Addr
+}
+
+func (fakeTailnet) CheckConnection(context.Context, protocol.DeviceID, net.Addr, net.Addr, bool, time.Time) (string, error) {
+	return "", nil
+}
+
+func (fakeTailnet) CheckEstablished(context.Context, protocol.DeviceID, net.Addr, time.Time) error {
+	return nil
+}
+
+func (f fakeTailnet) NodeAddresses(node string) []netip.Addr { return f.nodes[node] }
+
+func (fakeTailnet) Updates() <-chan struct{} { return nil }
+
+func TestTailnetDialTargets(t *testing.T) {
+	s := &service{tailnet: fakeTailnet{map[string][]netip.Addr{"n1": {netip.MustParseAddr("100.64.0.2"), netip.MustParseAddr("fd7a:115c:a1e0::2")}}}}
+	for addr, want := range map[string]bool{
+		"tcp://100.64.0.2:22000":            true,
+		"tcp://[fd7a:115c:a1e0::2]:22000":   true,
+		"tcp4://100.64.0.2:22000":           true,
+		"quic://100.64.0.2:22000":           false, // not TCP
+		"tcp://192.168.1.5:22000":           false, // not the node
+		"tcp://100.64.0.3:22000":            false, // another node
+		"relay://100.64.0.2:22067/?id=XXXX": false,
+	} {
+		uri, err := url.Parse(addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := s.isTailnetDialTarget("n1", uri); got != want {
+			t.Errorf("isTailnetDialTarget(%s) = %v, want %v", addr, got, want)
+		}
+	}
+}
 
 func TestFixupPort(t *testing.T) {
 	cases := [][2]string{

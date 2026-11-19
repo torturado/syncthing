@@ -86,8 +86,10 @@ symmetric grant above covers both.
 ### When a device is added
 
 A device that Syncthing does not know connects, or a probe finds it on the
-tailnet. It is added only if the connection is direct TCP or QUIC, arrived on
-one of our tailnet addresses, and does not come from one of them. `WhoIs` must
+tailnet. It is added only if the connection is direct TCP, not relayed and not
+through a proxy, arrived on one of our tailnet addresses, and does not come
+from one of them. Its remote address must also still belong to the node that
+our peer table holds for it. `WhoIs` must
 also show all of the following:
 
 - a node named in our own tailnet's domain;
@@ -109,7 +111,8 @@ GUI, an introducer or auto-accept. A node can be bound to only one device.
 ### While the device is bound
 
 The node that authorized a connection is recorded on that connection. A bound
-device is admitted only on a connection authorized for its node. Its
+device is admitted only on a connection authorized for its node, and it is
+only dialed over TCP at that node's tailnet addresses. Its
 established connections go through `WhoIs` again whenever the tailnet changes,
 and at least every 30 seconds. When a check fails, they are closed.
 
@@ -122,9 +125,14 @@ into an ordinary one, clear its `tailnetNodeID` in the advanced settings.
 
 ## End-to-end tests
 
-`test/tailscale` runs Syncthing on a real tailnet: Headscale is the control
-server, and each node is a Docker container running tailscaled with TUN. It
-needs Docker and pulls `headscale/headscale` and `tailscale/tailscale`.
+`test/tailscale` runs Syncthing on a real tailnet:
+
+- Headscale is the control server.
+- A DERP relay runs alongside it.
+- Each node is a Docker container running tailscaled with TUN.
+
+It needs Docker, pulls `headscale/headscale` and `tailscale/tailscale`, and
+builds `derper` from the same Tailscale release.
 
 ```sh
 go test -tags tailscale_e2e -v -timeout 20m ./test/tailscale

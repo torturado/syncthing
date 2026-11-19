@@ -47,7 +47,9 @@ const (
 	probeTimeout    = 10 * time.Second
 	probeParallel   = 4
 	probeRetryMin   = 15 * time.Second
-	probeRetryMax   = 2 * time.Minute
+	// A failed probe costs the peer nothing it logs, and a fresh peer is
+	// often unreachable for a while until its path is established.
+	probeRetryMax = 30 * time.Second
 	// Bounds the exponent of the probe backoff, so the shift cannot
 	// overflow; probeRetryMax is reached well before.
 	probeMaxDoublings = 8
@@ -107,6 +109,7 @@ type Tailnet struct {
 
 type peer struct {
 	addrs     []netip.Addr      // tailnet addresses, IPv4 first; never modified
+	since     time.Time         // when the table first held the node with these addresses
 	deviceID  protocol.DeviceID // learned by probing; empty until then
 	probing   bool
 	failures  int
@@ -282,7 +285,7 @@ func (t *Tailnet) refresh(ctx context.Context) error {
 		}
 		// New peer, or one whose addresses changed (possibly a reused
 		// address): learn its device ID again.
-		t.peers[id] = &peer{addrs: addrs}
+		t.peers[id] = &peer{addrs: addrs, since: time.Now()}
 	}
 	return nil
 }

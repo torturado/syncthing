@@ -99,7 +99,7 @@ func TestDiscovery(t *testing.T) {
 // the syncthing.net/cap/syncthing grant, for folder "shared", only to nodes
 // that are also tagged tag:approved.
 const grantPolicy = `{
-  "tagOwners": {"tag:syncthing": ["syncthing@"], "tag:approved": ["syncthing@"]},
+  "tagOwners": {"tag:syncthing": ["syncthing@"], "tag:approved": ["syncthing@"], "tag:anchor": ["syncthing@"]},
   "grants": [
     {"src": ["tag:syncthing"], "dst": ["tag:syncthing"], "ip": ["tcp:22000"]},
     {"src": ["tag:approved"], "dst": ["tag:syncthing"],
@@ -107,11 +107,15 @@ const grantPolicy = `{
   ]
 }`
 
-// revokedPolicy is grantPolicy without the application capability.
+// revokedPolicy is grantPolicy with the capability granted only from nodes
+// tagged tag:anchor: the anchor keeps its grant towards the others, but
+// theirs towards it are revoked, so only the anchor's checks can act.
 const revokedPolicy = `{
-  "tagOwners": {"tag:syncthing": ["syncthing@"], "tag:approved": ["syncthing@"]},
+  "tagOwners": {"tag:syncthing": ["syncthing@"], "tag:approved": ["syncthing@"], "tag:anchor": ["syncthing@"]},
   "grants": [
-    {"src": ["tag:syncthing"], "dst": ["tag:syncthing"], "ip": ["tcp:22000"]}
+    {"src": ["tag:syncthing"], "dst": ["tag:syncthing"], "ip": ["tcp:22000"]},
+    {"src": ["tag:anchor"], "dst": ["tag:syncthing"],
+     "app": {"syncthing.net/cap/syncthing": [{"folders": ["shared"]}]}}
   ]
 }`
 
@@ -155,7 +159,7 @@ func TestAuthorization(t *testing.T) {
 	h := newHarness(t, grantPolicy)
 	approved := h.authKey("tag:syncthing", "tag:approved")
 
-	a := h.startNode("node-a", approved)
+	a := h.startNode("node-a", h.authKey("tag:syncthing", "tag:approved", "tag:anchor"))
 	a.addFolder("shared")
 	a.addFolder("private")
 	a.exec("sh", "-c", "echo granted data > /data/shared/granted.txt; echo secret > /data/private/secret.txt")
@@ -187,8 +191,8 @@ func TestAuthorization(t *testing.T) {
 		}
 
 		t.Run("a device whose grant is revoked loses its connection", func(t *testing.T) {
-			// node-b stays on the tailnet, so only node-a's re-check can
-			// close the connection.
+			// node-b stays on the tailnet and keeps its grant from node-a,
+			// so only node-a's re-check can close the connection.
 			start := time.Now()
 			h.setPolicy(revokedPolicy)
 			waitFor(t, "node-a to drop node-b", time.Minute, func() bool {
@@ -200,8 +204,10 @@ func TestAuthorization(t *testing.T) {
 				t.Error("node-a did not log closing the revoked connection")
 			}
 
+			// The refused dials put node-b into Syncthing's dial cool-down,
+			// which can last five minutes.
 			h.setPolicy(grantPolicy)
-			waitFor(t, "node-b to be authorized again", 2*time.Minute, func() bool {
+			waitFor(t, "node-b to be authorized again", 7*time.Minute, func() bool {
 				_, ok := a.connectedTo(b)
 				return ok
 			})
@@ -320,7 +326,7 @@ func TestAuthorization(t *testing.T) {
 		})
 		devicesBefore := len(a.config().Devices)
 
-		a.exec("pkill", "tailscaled")
+		a.stopTailscaled()
 		waitFor(t, "node-a to report that tailscaled is gone", time.Minute, func() bool {
 			return tailnetErrored(a)
 		})

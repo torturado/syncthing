@@ -145,8 +145,6 @@ func newHarness(t *testing.T, policy string) *harness {
 		"-v", filepath.Join(h.dir, "derp.yaml")+":/etc/headscale/derp.yaml:ro",
 		"-v", h.dir+":/policy:ro",
 		headscaleImage, "serve", "-c", "/etc/headscale/config.yaml")
-	// The policy is read through the directory mount so that rewriting the
-	// file is visible to the container.
 	waitFor(t, "headscale", 30*time.Second, func() bool {
 		_, err := h.dockerErr("exec", h.control, "headscale", "users", "list")
 		return err == nil
@@ -204,13 +202,6 @@ func (h *harness) jsonOut(v any, args ...string) {
 	if err := json.Unmarshal([]byte(h.docker(args...)), v); err != nil {
 		h.t.Fatalf("docker %s: %v", strings.Join(args, " "), err)
 	}
-}
-
-// setPolicy replaces the tailnet policy and makes Headscale reload it.
-func (h *harness) setPolicy(policy string) {
-	h.t.Helper()
-	h.write("policy.json", policy)
-	h.docker("kill", "-s", "HUP", h.control)
 }
 
 // authKey returns a pre-authentication key; nodes that use it are tagged

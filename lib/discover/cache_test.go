@@ -144,3 +144,19 @@ func (*slowDiscovery) String() string {
 func (*slowDiscovery) Cache() map[protocol.DeviceID]CacheEntry {
 	return nil
 }
+
+func TestCacheDisabledWithZeroCacheTimes(t *testing.T) {
+	// A finder added without cache times answers from its own live state;
+	// the manager must not report its past answers once they are gone.
+	c := setupCache()
+	f := &fakeDiscovery{[]string{"tcp://192.0.2.42:22000"}}
+	c.addLocked("live", f, 0, 0)
+
+	if addr, err := c.Lookup(context.Background(), protocol.LocalDeviceID); err != nil || len(addr) != 1 {
+		t.Fatalf("Lookup = %v, %v", addr, err)
+	}
+	f.addresses = nil
+	if entry, ok := c.Cache()[protocol.LocalDeviceID]; ok {
+		t.Errorf("stale cache entry %v for a finder without caching", entry)
+	}
+}

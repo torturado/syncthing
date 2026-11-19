@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,12 +41,16 @@ const (
 
 	refreshInterval = 30 * time.Second
 	refreshDebounce = time.Second
+	statusTimeout   = 10 * time.Second
 	probeTimeout    = 10 * time.Second
 	probeParallel   = 4
 	probeRetryMin   = 15 * time.Second
 	probeRetryMax   = 2 * time.Minute
-	watchRetryMin   = time.Second
-	watchRetryMax   = 30 * time.Second
+	// Bounds the exponent of the probe backoff, so the shift cannot
+	// overflow; probeRetryMax is reached well before.
+	probeMaxDoublings = 8
+	watchRetryMin     = time.Second
+	watchRetryMax     = 30 * time.Second
 )
 
 // localAPI is the part of the tailscaled LocalAPI that the integration uses.
@@ -219,6 +224,8 @@ func (t *Tailnet) watch(ctx context.Context) (connected bool, err error) {
 }
 
 func (t *Tailnet) refresh(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
+	defer cancel()
 	st, err := t.api.Status(ctx)
 	if err != nil {
 		return fmt.Errorf("query tailscaled status: %w", err)
@@ -251,9 +258,15 @@ func taggedPeers(st *ipnstate.Status) (map[tailcfg.StableNodeID][]netip.Addr, er
 	if !st.TUN {
 		return nil, errors.New("tailscaled uses userspace networking, which cannot identify peers")
 	}
+	if st.Self == nil {
+		return nil, errors.New("tailscaled reported no node of its own")
+	}
+	domain := tailnetDomain(st.Self.DNSName)
 	peers := make(map[tailcfg.StableNodeID][]netip.Addr)
 	for _, ps := range st.Peer {
-		if ps.ShareeNode || ps.Expired || len(ps.TailscaleIPs) == 0 {
+		// Nodes shared in from, or shared out to, another tailnet are named
+		// in that tailnet's domain.
+		if tailnetDomain(ps.DNSName) != domain || ps.Expired || len(ps.TailscaleIPs) == 0 {
 			continue
 		}
 		if ps.Tags == nil || !ps.Tags.ContainsFunc(func(tag string) bool { return tag == PeerTag }) {
@@ -264,6 +277,13 @@ func taggedPeers(st *ipnstate.Status) (map[tailcfg.StableNodeID][]netip.Addr, er
 		peers[ps.ID] = addrs
 	}
 	return peers, nil
+}
+
+// tailnetDomain returns the tailnet part of a node's MagicDNS name, such as
+// "example.ts.net" for "laptop.example.ts.net.".
+func tailnetDomain(fqdn string) string {
+	_, domain, _ := strings.Cut(strings.TrimSuffix(fqdn, "."), ".")
+	return domain
 }
 
 func (t *Tailnet) startProbes(ctx context.Context, probed chan<- struct{}) {
@@ -286,14 +306,22 @@ func (t *Tailnet) startProbes(ctx context.Context, probed chan<- struct{}) {
 func (t *Tailnet) probe(ctx context.Context, p *peer, probed chan<- struct{}) {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	addr := netip.AddrPortFrom(p.addrs[0], t.port).String()
-	id, err := probeDeviceID(ctx, t.tlsCfg, addr)
+	// Try each address in turn: a peer may serve BEP on only one family.
+	var id protocol.DeviceID
+	var addr string
+	var err error
+	for _, ip := range p.addrs {
+		addr = netip.AddrPortFrom(ip, t.port).String()
+		if id, err = probeDeviceID(ctx, t.tlsCfg, addr); err == nil {
+			break
+		}
+	}
 
 	t.mut.Lock()
 	t.probing--
 	p.probing = false
 	if err != nil {
-		p.failures++
+		p.failures = min(p.failures+1, probeMaxDoublings)
 		p.nextProbe = time.Now().Add(min(probeRetryMin<<(p.failures-1), probeRetryMax))
 		slog.DebugContext(ctx, "Tailnet peer identity probe failed", slogutil.Address(addr), slogutil.Error(err))
 	} else {

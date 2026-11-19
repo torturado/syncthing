@@ -32,14 +32,18 @@ Set `tailscaleDiscoveryEnabled` under *Actions → Advanced → Options*, or the
 ### How it works
 
 Syncthing follows the tailscaled IPN bus and keeps a table of tagged peers.
-Peers that are shared in from another tailnet or whose key has expired are left
-out.
+Two kinds of peer are left out:
+
+- peers whose MagicDNS name belongs to another tailnet, which are nodes shared
+  in or shared out;
+- peers whose key has expired.
 
 For each peer, Syncthing learns which device ID it runs. It opens a TLS
-connection to port 22000 and checks that the peer proves it holds the
-certificate's key. It then aborts the handshake before sending its own
-certificate, so a peer that is probed never learns our device ID. Because the
-probe aborts, the probed Syncthing logs one "Failed TLS handshake" warning.
+connection to port 22000 on each of the peer's addresses in turn, and checks
+that the peer proves it holds the certificate's key. It then aborts the
+handshake when the peer asks for a client certificate, before sending one, so a
+peer that is probed never learns our device ID. Because the probe aborts, the
+probed Syncthing logs one "Failed TLS handshake" warning.
 
 A device ID then resolves to `tcp://<tailnet-ip>:22000` for every tailnet
 address of the peer that presented it.

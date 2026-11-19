@@ -96,7 +96,12 @@ func (w *fakeWatcher) Next() (ipn.Notify, error) {
 func (*fakeWatcher) Close() error { return nil }
 
 func testStatus(peers ...*ipnstate.PeerStatus) *ipnstate.Status {
-	st := &ipnstate.Status{BackendState: ipn.Running.String(), TUN: true, Peer: map[key.NodePublic]*ipnstate.PeerStatus{}}
+	st := &ipnstate.Status{
+		BackendState: ipn.Running.String(),
+		TUN:          true,
+		Self:         &ipnstate.PeerStatus{DNSName: "self.tailnet.test."},
+		Peer:         map[key.NodePublic]*ipnstate.PeerStatus{},
+	}
 	for _, p := range peers {
 		st.Peer[key.NewNode().Public()] = p
 	}
@@ -105,7 +110,7 @@ func testStatus(peers ...*ipnstate.PeerStatus) *ipnstate.Status {
 
 func testPeer(id, ip string, tags ...string) *ipnstate.PeerStatus {
 	tagView := views.SliceOf(tags)
-	return &ipnstate.PeerStatus{ID: tailcfg.StableNodeID(id), TailscaleIPs: []netip.Addr{netip.MustParseAddr(ip)}, Tags: &tagView}
+	return &ipnstate.PeerStatus{ID: tailcfg.StableNodeID(id), DNSName: id + ".tailnet.test.", TailscaleIPs: []netip.Addr{netip.MustParseAddr(ip)}, Tags: &tagView}
 }
 
 // bepServer is a TLS listener that behaves like the BEP listener and records
@@ -201,11 +206,12 @@ func TestTailnetResolvesTaggedPeers(t *testing.T) {
 
 	tagged := testPeer("n-tagged", "127.0.0.1", PeerTag)
 	untagged := testPeer("n-untagged", "127.0.0.2")
-	sharee := testPeer("n-sharee", "127.0.0.3", PeerTag)
-	sharee.ShareeNode = true
+	// A node of another tailnet, shared in or shared out to.
+	foreign := testPeer("n-foreign", "127.0.0.3", PeerTag)
+	foreign.DNSName = "n-foreign.other.ts.net."
 	expired := testPeer("n-expired", "127.0.0.4", PeerTag)
 	expired.Expired = true
-	api := newFakeLocalAPI(testStatus(tagged, untagged, sharee, expired))
+	api := newFakeLocalAPI(testStatus(tagged, untagged, foreign, expired))
 	tn := startTailnet(t, api, srv.port())
 
 	waitFor(t, "the tagged peer to be identified", func() bool {
@@ -216,12 +222,17 @@ func TestTailnetResolvesTaggedPeers(t *testing.T) {
 	}
 	tn.mut.Lock()
 	if _, ok := tn.peers["n-tagged"]; !ok || len(tn.peers) != 1 {
-		t.Errorf("peer table %v, want only the tagged, unshared, unexpired peer", tn.peers)
+		t.Errorf("peer table %v, want only the tagged, unexpired peer of our tailnet", tn.peers)
 	}
 	tn.mut.Unlock()
+	waitFor(t, "the server to record the probe", func() bool {
+		srv.mut.Lock()
+		defer srv.mut.Unlock()
+		return srv.handshakes > 0
+	})
 	srv.mut.Lock()
-	if srv.handshakes == 0 || srv.clientCerts != 0 {
-		t.Errorf("server saw %d handshakes with %d client certificates; the probe must not present one", srv.handshakes, srv.clientCerts)
+	if srv.clientCerts != 0 {
+		t.Errorf("server saw %d client certificates; the probe must not present one", srv.clientCerts)
 	}
 	srv.mut.Unlock()
 
@@ -251,5 +262,36 @@ func TestTailnetRequiresRunningKernelTUN(t *testing.T) {
 		if peers, err := taggedPeers(st); err == nil || peers != nil {
 			t.Errorf("taggedPeers(state %s, TUN %v) = %v, %v; want no peers and an error", st.BackendState, st.TUN, peers, err)
 		}
+	}
+}
+
+func TestProbeRequiresBEPListener(t *testing.T) {
+	// A TLS service that never asks for a client certificate is not a BEP
+	// listener, and nothing is learned from it.
+	cert, err := tlsutil.NewCertificateInMemory("syncthing", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := tlsutil.SecureDefaultTLS13()
+	cfg.Certificates = []tls.Certificate{cert}
+	lst, err := tls.Listen("tcp", "127.0.0.1:0", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lst.Close()
+	go func() {
+		for {
+			conn, err := lst.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.(*tls.Conn).Handshake()
+			conn.Close()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if id, err := probeDeviceID(ctx, tlsutil.SecureDefaultTLS13(), lst.Addr().String()); err == nil {
+		t.Errorf("probe learned %v from a listener that requests no client certificate", id)
 	}
 }

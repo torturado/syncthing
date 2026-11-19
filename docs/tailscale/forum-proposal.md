@@ -73,10 +73,10 @@ LocalAPI `WhoIs` on the peer's tailnet address shows that the node:
 - has a key that has not expired;
 - is tagged `tag:syncthing`;
 - holds the application capability `syncthing.net/cap/syncthing`, granted
-  explicitly in the policy file;
-- is not already bound to another device.
+  explicitly in the policy file.
 
-There are two ways to get there:
+Syncthing's own configuration must also not have another device bound to that
+node already. There are two ways to get there:
 
 - **After a probe.** The probe has proven which device ID the peer runs, and
   `WhoIs` must name the same node that was probed. This is how two devices
@@ -121,10 +121,10 @@ whichever mechanism tried to share it: the GUI, an introducer, or auto-accept.
 Auto-accept is limited to granted folders. Without that, auto-accept would also
 share an existing local folder with any peer that merely offers its ID.
 
-The grant also drives sharing. A granted local folder is shared with the
-device, and if it is unshared in the GUI it is shared again on the next
-re-check while the grant still lists it. To stop sharing it, remove it from
-the grant.
+The grant also drives sharing, subject to Syncthing's normal sharing rules. A
+granted local folder is shared with the device. If it is unshared in the GUI,
+it is shared again on the next re-check while the grant still lists it. To stop
+sharing it, remove it from the grant.
 
 **Each connection is checked:**
 
@@ -135,11 +135,12 @@ the grant.
 - It is asked again after the Hello.
 - It is compared with the binding at final admission.
 
-Established connections of bound devices are re-checked after each tailnet
-update that our tailscaled reports, and on the 30 s refresh. Once the tailnet
+Established connections of bound devices are re-checked after tailnet
+notifications, which are coalesced, and on the 30 s refresh. Once the tailnet
 stops vouching for the device, they are closed. That covers a deleted node, an
 expired key, a removed tag or grant, and an unreachable LocalAPI. In the
-end-to-end runs on Headscale, this took about 2 s.
+end-to-end runs on Headscale, three events each closed the connection in about
+2 s: a revoked grant, a deleted node and an expired key.
 
 - An unknown device that does not pass becomes a pending device, exactly as
   today.
@@ -157,8 +158,8 @@ This option restricts inbound BEP only:
 - Without a tailnet address, no BEP listener runs. It never falls back to
   `0.0.0.0`.
 
-Outbound connections, including through relays when relays are enabled, are
-unchanged, and so is the GUI.
+Outbound dialing is not restricted. It can still use routes outside the
+tailnet, including relays when they are enabled. The GUI is unchanged.
 
 ## Security
 
@@ -167,9 +168,13 @@ I wrote the threat model before the code:
 It went through several rounds of adversarial review, which changed the
 design. In short:
 
-- **Fail closed everywhere.** A `WhoIs` failure refuses only the connection or
-  enrollment it was for. When the tailnet watch or `Status` shows the whole
-  integration is unavailable, the effects are wider. No device is added,
+- **Fail closed everywhere.** A `WhoIs` failure affects only the connection or
+  enrollment it was for:
+  - an unknown peer stays on the normal pending-device path;
+  - a bound device's connection is refused or closed.
+
+  When the tailnet watch or `Status` shows the whole integration is
+  unavailable, the effects are wider. No device is added,
   tailnet-authorized devices are refused, the finder returns nothing, and
   listen-only has no BEP listener. That happens when:
   - tailscaled is down or logged out;
@@ -177,7 +182,8 @@ design. In short:
   - the LocalAPI cannot be reached.
 
   Devices configured by hand keep syncing over whatever other routes they
-  have, such as the LAN, unless listen-only is on.
+  have, such as the LAN. With listen-only on, this node no longer accepts
+  connections on those routes, but it can still dial out over them.
 - **Trust delegation.** Enabling option 2 delegates authorization to whoever
   can edit the policy and owns `tag:syncthing`. That is why it is opt-in on each
   node.
@@ -209,8 +215,9 @@ runs on a real tailnet:
 
 It shows the following:
 
-- Both nodes have the options on and the grant runs both ways. A fresh node
-  then syncs the granted folder to 100 % with no manual step on either side.
+- Both nodes have discovery and auto-accept on, and the grant runs both ways.
+  A fresh node then syncs the granted folder to 100 % with no manual step on
+  either side.
 - A tagged node without the grant stays pending and gets no folder.
 - Revoking a grant, deleting a node and expiring its key each disconnect the
   device in about 2 s. The goal was under a minute.

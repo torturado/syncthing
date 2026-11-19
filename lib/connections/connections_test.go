@@ -699,6 +699,11 @@ func TestTailnetListenAddresses(t *testing.T) {
 			want: []string{"quic6://[fd7a:115c:a1e0::1]:22002", "tcp4://100.64.0.1:22001"},
 		},
 		{
+			// A listener without a port uses the default one.
+			listen: []string{"tcp4://0.0.0.0", "quic4://0.0.0.0:"}, listenOnly: true, tailnet: tailnet,
+			want: []string{"quic4://100.64.0.1:22000", "tcp4://100.64.0.1:22000"},
+		},
+		{
 			// No tailnet address: nothing listens.
 			listen: []string{"default"}, listenOnly: true,
 			want: nil,

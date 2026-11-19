@@ -415,17 +415,20 @@ func TestAddressReuse(t *testing.T) {
 	}
 }
 
-// listeners returns the addresses the node listens on.
+// listeners returns the addresses the node is actually listening on:
+// listeners that failed to bind report an error and are left out.
 func listeners(n *node) []string {
 	var status struct {
 		ConnectionServiceStatus map[string]struct {
-			LANAddresses []string `json:"lanAddresses"`
+			Error *string `json:"error"`
 		} `json:"connectionServiceStatus"`
 	}
 	n.rest(http.MethodGet, "/rest/system/status", nil, &status)
 	var addrs []string
-	for uri := range status.ConnectionServiceStatus {
-		addrs = append(addrs, uri)
+	for uri, listener := range status.ConnectionServiceStatus {
+		if listener.Error == nil {
+			addrs = append(addrs, uri)
+		}
 	}
 	slices.Sort(addrs)
 	return addrs
@@ -452,6 +455,15 @@ func TestListenOnly(t *testing.T) {
 	a.addFolder("shared", b)
 	b.addFolder("shared", a)
 	enableDiscovery(b)
+
+	// Start from live wildcard TCP and QUIC listeners, as by default.
+	a.modifyConfig(func(cfg *config.Configuration) {
+		cfg.Options.RawListenAddresses = []string{"tcp://0.0.0.0:22000", "quic://0.0.0.0:22000"}
+	})
+	waitFor(t, "node-a to listen on all interfaces", time.Minute, func() bool {
+		return slices.Equal(listeners(a), []string{"quic://0.0.0.0:22000", "tcp://0.0.0.0:22000"})
+	})
+
 	a.modifyConfig(func(cfg *config.Configuration) {
 		cfg.Options.TailscaleDiscoveryEnabled = true
 		cfg.Options.TailscaleListenOnly = true

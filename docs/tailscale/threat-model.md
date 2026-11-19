@@ -108,8 +108,15 @@ Out of scope:
   Hello is not missed.
 
   When the BEP session is finally admitted, a bound device is accepted only if
-  its connection was authorized for the bound node. This covers inbound,
-  outbound and additional connections alike.
+  its connection was authorized for the bound node. The final check applies
+  the folder list it receives, and waits for the resulting configuration to
+  be published, before BEP starts. A grant that shrank during the Hello
+  therefore never reaches the session. This covers inbound, outbound and
+  additional connections alike.
+
+  The node that `WhoIs` names must also be the node that our peer table held
+  for the remote address when the check began. If the address changed hands,
+  the connection is not authorized, and an unknown device stays pending.
 
   The configuration change that adds a device checks once more, inside the
   change, that the device is not known, not ignored and that its node is not
@@ -126,10 +133,17 @@ Out of scope:
   that exist locally are shared with it.
 
   On every new connection, the device's current grant is applied before the
-  Hello exchange. A device that was offline while its grant shrank therefore
-  never starts BEP with the old list. Access to a folder's data ends when the
-  commit that unshares it is published, because the model checks index
-  updates and block requests against the current configuration.
+  Hello exchange and again at admission (R5). A device that was offline while
+  its grant shrank therefore never starts BEP with the old list.
+
+  On a live connection, a folder that leaves the grant is unshared by a
+  configuration commit, exactly as when a user unshares it in the GUI:
+  - index updates are refused as soon as the commit is published;
+  - block requests are refused once the model has applied the change, a
+    moment later;
+  - requests already in flight complete.
+
+  The integration adds no data-path check of its own.
 - **R7. Re-checks and fail closed.** Every established connection of a bound
   device goes through `WhoIs` again whenever the tailnet state changes, and at
   least every 30 seconds. A failed check closes the connection, and the device's
@@ -185,9 +199,13 @@ towards itself. If only B to A is granted:
 - B leaves A pending;
 - nothing is shared until the reverse grant exists.
 
-If network access only allows one direction, only that side can probe and
-dial. Enrollment then still needs the grant towards the side that receives the
-connection.
+If network access only allows one direction, say A to B, only A can probe and
+dial:
+- A enrolls B by probing it, using B's grant towards A;
+- B can enroll A when A's connection arrives, using A's grant towards B.
+
+In short, the side that receives a connection enrolls the other with the grant
+towards itself.
 
 Enrollment is deliberately one-sided: a device never gets more than the side
 that admits it grants.
@@ -246,16 +264,23 @@ node.
   to pass TLS (R1).
 
 A device found by a probe is added only if `WhoIs` names the same node that
-the peer table held when the probe ran.
+the peer table held when the probe ran. Connections are held to the same rule
+(R5): `WhoIs` must name the node that the peer table held for the remote
+address when the check began.
 
-A narrow race remains on incoming connections. If an address is reassigned
-between the TLS handshake and its `WhoIs` call, the old owner's device can be
-bound to the new owner's node. That binding gives the old owner nothing,
-because its later connections come from another node and are refused (R4,
-R5). The new owner also gains nothing, because it does not hold the device's
-key (R1). The only effect is that the new owner's own device stays pending
-until the stale binding is removed. Reassignment within that window requires
-deleting a node and enrolling a new one in the same few milliseconds.
+A narrow race remains on incoming connections. Our tailscaled may move an
+address to a new node after accepting the old owner's handshake, but before
+our peer table catches up.
+
+In that case the old owner's device can be bound to the new owner's node. The
+binding gives the old owner nothing. Once its node is gone, our tailscaled
+drops its packets, so the socket stalls, and its later connections come from
+another node and are refused (R4, R5). The new owner gains nothing either,
+because it does not hold the device's key (R1).
+
+The only effect is that the new owner's own device stays pending until the
+stale binding is removed. Reassignment within that window requires deleting a
+node and enrolling a new one in the same few milliseconds.
 
 ### S4. tailscaled is stopped, has crashed, or is unhealthy
 
@@ -283,9 +308,10 @@ Listen-only reduces exposure. It is not an authorization control.
 **What it does not do:**
 - It does not restrict outgoing connections. Syncthing can still dial devices
   that are configured by hand at non-tailnet addresses.
-- A handshake that was already in flight when the listeners moved completes
-  under the normal rules. It is still subject to R2 to R5 if it belongs to a
-  bound device.
+- A handshake that was already in flight when the listeners moved may be
+  aborted, for example when a QUIC listener closes, or it may complete. If it
+  completes, it is handled under the normal rules, and R2 to R5 still apply
+  if it belongs to a bound device.
 
 ### S6. Other threats
 
@@ -340,7 +366,7 @@ the configuration cannot hold such a share.
 | A new device with the grant syncs 100 % with no manual steps. | Enrollment | A tagged node with the grant starts with an empty configuration plus the options. It reaches 100 % completion on the granted folder, and the seeded file arrives with the same content. |
 | A device without the grant receives no folders. | S1b | A tagged node without the grant stays pending on the others. No folder is shared with it, and no file reaches it. |
 | An expelled device loses its connection in under a minute. | S2a, S2b, S2c | `headscale nodes delete`, `headscale nodes expire`, and separately a policy that removes the grant. Measure the time until the surviving peer reports the device disconnected. Timing starts at the control-plane action, so it also bounds the time our tailscaled takes to observe the change. |
-| An address is reused. | S3 | If Headscale hands the expelled node's address to a new node, the new node is added as a new device, and the expelled device stays disconnected. |
+| An address is reused. | S3 | **Unit test, deterministic:** a fake LocalAPI gives one address to two node IDs in turn. The old binding is refused from it, and the new node's device can enroll. **End-to-end:** Headscale is limited to a /30 and a /126 with random allocation, so the next node gets the expelled node's addresses. That node also presents the expelled device's certificate, and it is refused. |
 | With tailscaled stopped, Syncthing keeps its known devices and accepts no new ones. | S4a | **LocalAPI cut, while the tailnet still carries traffic:** a proxy in front of the socket closes every LocalAPI connection, including the IPN stream and pooled HTTP connections, and refuses new ones. Bound devices disconnect, and a tailnet-authorized new device that connects over the tailnet stays pending. **tailscaled stopped:** a device configured by hand keeps syncing over the LAN, and no device is added or removed. |
 | Listen-only. | S5 | The LAN address refuses connections, the peer reaches the node over the tailnet, and with tailscaled stopped nothing listens. |
 | No improper access. | All | Every scenario checks that each node's folder list and connected devices contain exactly what the grants allow. |

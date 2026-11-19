@@ -156,6 +156,7 @@ func (t *tcpListener) serve(ctx context.Context) error {
 			}
 		}
 
+		started := time.Now()
 		tc := tls.Server(conn, t.tlsCfg)
 		if err := tlsTimedHandshake(tc); err != nil {
 			slog.WarnContext(ctx, "Failed TLS handshake", slogutil.Address(tc.RemoteAddr()), slogutil.Error(err))
@@ -168,7 +169,9 @@ func (t *tcpListener) serve(ctx context.Context) error {
 		if isLocal {
 			priority = t.cfg.Options().ConnectionPriorityTCPLAN
 		}
-		t.conns <- newInternalConn(tc, connTypeTCPServer, isLocal, priority)
+		ic := newInternalConn(tc, connTypeTCPServer, isLocal, priority)
+		ic.handshakeStarted = started
+		t.conns <- ic
 	}
 }
 

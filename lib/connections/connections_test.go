@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,7 +34,9 @@ import (
 )
 
 type fakeTailnet struct {
-	nodes map[string][]netip.Addr
+	nodes       map[string][]netip.Addr
+	epoch       uint64
+	unavailable bool
 }
 
 func (fakeTailnet) CheckConnection(context.Context, protocol.DeviceID, net.Addr, net.Addr, bool, time.Time) (string, error) {
@@ -46,10 +49,12 @@ func (fakeTailnet) CheckEstablished(context.Context, protocol.DeviceID, net.Addr
 
 func (f fakeTailnet) NodeAddresses(node string) []netip.Addr { return f.nodes[node] }
 
+func (f fakeTailnet) Available() (uint64, bool) { return f.epoch, !f.unavailable }
+
 func (fakeTailnet) Updates() <-chan struct{} { return nil }
 
 func TestTailnetDialTargets(t *testing.T) {
-	s := &service{tailnet: fakeTailnet{map[string][]netip.Addr{"n1": {netip.MustParseAddr("100.64.0.2"), netip.MustParseAddr("fd7a:115c:a1e0::2")}}}}
+	s := &service{tailnet: fakeTailnet{nodes: map[string][]netip.Addr{"n1": {netip.MustParseAddr("100.64.0.2"), netip.MustParseAddr("fd7a:115c:a1e0::2")}}}}
 	for addr, want := range map[string]bool{
 		"tcp://100.64.0.2:22000":            true,
 		"tcp://[fd7a:115c:a1e0::2]:22000":   true,
@@ -66,6 +71,38 @@ func TestTailnetDialTargets(t *testing.T) {
 		if got := s.isTailnetDialTarget("n1", uri); got != want {
 			t.Errorf("isTailnetDialTarget(%s) = %v, want %v", addr, got, want)
 		}
+	}
+}
+
+func TestTailnetAdmission(t *testing.T) {
+	dev := config.DeviceConfiguration{DeviceID: protocol.DeviceID{1}, TailnetNodeID: "n1"}
+	authorized := internalConn{tailnetNode: "n1", tailnetEpoch: 3}
+	for name, tc := range map[string]struct {
+		tailnet fakeTailnet
+		conn    internalConn
+		want    bool
+	}{
+		"authorized, no outage since":   {fakeTailnet{epoch: 3}, authorized, true},
+		"an outage came in between":     {fakeTailnet{epoch: 4}, authorized, false},
+		"unavailable now":               {fakeTailnet{epoch: 3, unavailable: true}, authorized, false},
+		"authorized for another node":   {fakeTailnet{epoch: 3}, internalConn{tailnetNode: "n2", tailnetEpoch: 3}, false},
+		"not authorized by the tailnet": {fakeTailnet{epoch: 3}, internalConn{}, false},
+	} {
+		if got := (&service{tailnet: tc.tailnet}).tailnetAdmits(dev, tc.conn); got != tc.want {
+			t.Errorf("%s: tailnetAdmits = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestBoundDeviceDialsItsNode(t *testing.T) {
+	// Without Tailscale discovery, a bound device is still dialed at its
+	// node's tailnet addresses.
+	s := &service{tailnet: fakeTailnet{nodes: map[string][]netip.Addr{"n1": {netip.MustParseAddr("100.64.0.2"), netip.MustParseAddr("fd7a:115c:a1e0::2")}}}}
+	dev := config.DeviceConfiguration{DeviceID: protocol.DeviceID{1}, Addresses: []string{"dynamic"}, TailnetNodeID: "n1"}
+	got := s.resolveDeviceAddrs(context.Background(), dev)
+	slices.Sort(got)
+	if want := []string{"tcp://100.64.0.2:22000", "tcp://[fd7a:115c:a1e0::2]:22000"}; !slices.Equal(got, want) {
+		t.Errorf("addresses %v, want %v", got, want)
 	}
 }
 

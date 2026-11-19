@@ -46,7 +46,14 @@ type internalConn struct {
 	priority      int
 	establishedAt time.Time
 	connectionID  string // set after Hello exchange
-	tailnetNode   string // the tailnet node that authorized this connection, if any
+
+	// Set for TCP connections only: when the connection was opened, before
+	// its TLS handshake.
+	handshakeStarted time.Time
+	// The tailnet node that authorized this connection, if any, and the
+	// tailnet's outage epoch when it was checked.
+	tailnetNode  string
+	tailnetEpoch uint64
 }
 
 type connType int

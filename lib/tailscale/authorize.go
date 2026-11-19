@@ -57,9 +57,9 @@ var errTailnetUnavailable = errors.New("tailscale is unavailable")
 // grant, and its folders follow the grant. An unknown device is added when
 // auto-accept is on and the tailnet authorizes it; otherwise it is left to
 // become pending, as usual. direct is false for relayed connections, which
-// the tailnet can never authorize; established is when the connection's
-// handshake completed.
-func (t *Tailnet) CheckConnection(ctx context.Context, deviceID protocol.DeviceID, local, remote net.Addr, direct bool, established time.Time) (string, error) {
+// the tailnet can never authorize; began is when the connection was opened,
+// before its handshake.
+func (t *Tailnet) CheckConnection(ctx context.Context, deviceID protocol.DeviceID, local, remote net.Addr, direct bool, began time.Time) (string, error) {
 	dev, known := t.cfg.Device(deviceID)
 	if known && dev.TailnetNodeID == "" {
 		return "", nil
@@ -68,7 +68,7 @@ func (t *Tailnet) CheckConnection(ctx context.Context, deviceID protocol.DeviceI
 		return "", nil
 	}
 
-	auth, err := t.authorizeConnection(ctx, local, remote, direct, established)
+	auth, err := t.authorizeConnection(ctx, local, remote, direct, began)
 	if !known {
 		if err != nil {
 			slog.DebugContext(ctx, "Unknown device not authorized by the tailnet", deviceID.LogAttr(), slogutil.Address(remote), slogutil.Error(err))
@@ -88,12 +88,12 @@ func (t *Tailnet) CheckConnection(ctx context.Context, deviceID protocol.DeviceI
 
 // CheckEstablished checks an established connection of a device bound to a
 // tailnet node again; its local address was checked when it was set up.
-func (t *Tailnet) CheckEstablished(ctx context.Context, deviceID protocol.DeviceID, remote net.Addr, established time.Time) error {
+func (t *Tailnet) CheckEstablished(ctx context.Context, deviceID protocol.DeviceID, remote net.Addr, began time.Time) error {
 	dev, ok := t.cfg.Device(deviceID)
 	if !ok || dev.TailnetNodeID == "" {
 		return nil
 	}
-	auth, err := t.authorizeRemote(ctx, remote, established)
+	auth, err := t.authorizeRemote(ctx, remote, began)
 	if err != nil {
 		return err
 	}
@@ -109,7 +109,7 @@ func (t *Tailnet) checkBound(ctx context.Context, dev config.DeviceConfiguration
 
 // authorizeConnection requires a direct connection that arrived on one of our
 // tailnet addresses, then asks tailscaled who is at the remote end.
-func (t *Tailnet) authorizeConnection(ctx context.Context, local, remote net.Addr, direct bool, established time.Time) (authorization, error) {
+func (t *Tailnet) authorizeConnection(ctx context.Context, local, remote net.Addr, direct bool, began time.Time) (authorization, error) {
 	if !direct {
 		return authorization{}, errors.New("relayed connections are never authorized by the tailnet")
 	}
@@ -123,19 +123,19 @@ func (t *Tailnet) authorizeConnection(ctx context.Context, local, remote net.Add
 	if !slices.Contains(self, localAddr.Addr().Unmap()) {
 		return authorization{}, fmt.Errorf("connection to %s is not on the tailnet", local)
 	}
-	return t.authorizeRemote(ctx, remote, established)
+	return t.authorizeRemote(ctx, remote, began)
 }
 
 // authorizeRemote asks tailscaled who holds the remote address, which must
 // not be one of ours: another user on this host could connect from it.
 //
 // The node must also have held the address in our peer table since before
-// the connection was established. Our table only lags tailscaled, and the
+// the connection was opened (began). Our table only lags tailscaled, and the
 // handshake's replies go to the address's owner, so a node that held the
-// address before the handshake and still holds it is the node that completed
-// it. Otherwise a socket from a previous owner could be admitted, and its
-// buffered index entries applied, under the new owner's grant.
-func (t *Tailnet) authorizeRemote(ctx context.Context, remote net.Addr, established time.Time) (authorization, error) {
+// address before the handshake began and still holds it is the node that
+// completed it. Otherwise a socket from a previous owner could be admitted,
+// and its buffered index entries applied, under the new owner's grant.
+func (t *Tailnet) authorizeRemote(ctx context.Context, remote net.Addr, began time.Time) (authorization, error) {
 	remoteAddr, err := netip.ParseAddrPort(remote.String())
 	if err != nil {
 		return authorization{}, fmt.Errorf("remote address %s: %w", remote, err)
@@ -154,8 +154,8 @@ func (t *Tailnet) authorizeRemote(ctx context.Context, remote net.Addr, establis
 	if owner == "" {
 		return authorization{}, fmt.Errorf("%s is not an address of a tagged node of our tailnet", ip)
 	}
-	if !ownerSince.Before(established) {
-		return authorization{}, fmt.Errorf("node %s holds %s only since %s, after the connection was established", owner, ip, ownerSince.Format(time.RFC3339Nano))
+	if !ownerSince.Before(began) {
+		return authorization{}, fmt.Errorf("node %s holds %s only since %s, after the connection was opened", owner, ip, ownerSince.Format(time.RFC3339Nano))
 	}
 	auth, err := t.whois(ctx, remoteAddr.String(), domain)
 	if err != nil {
@@ -182,12 +182,23 @@ func (t *Tailnet) ownerLocked(ip netip.Addr) (tailcfg.StableNodeID, time.Time) {
 	return "", time.Time{}
 }
 
-// available reports whether the tailnet state can be trusted: tailscaled
+// Available reports whether the tailnet state can be trusted: tailscaled
 // answers, runs on a kernel TUN, and our own addresses and domain are known.
-// Without our domain, nodes of other tailnets cannot be told apart.
-func (t *Tailnet) available() bool {
+// Without our domain, nodes of other tailnets cannot be told apart. It also
+// returns the outage epoch, which grows each time the tailnet stops being
+// available, so that callers can tell whether an outage came in between.
+func (t *Tailnet) Available() (uint64, bool) {
 	t.mut.Lock()
 	defer t.mut.Unlock()
+	return t.epoch, t.availableLocked()
+}
+
+func (t *Tailnet) available() bool {
+	_, ok := t.Available()
+	return ok
+}
+
+func (t *Tailnet) availableLocked() bool {
 	return t.err == nil && len(t.self) > 0 && t.domain != ""
 }
 

@@ -231,6 +231,9 @@ func TestCheckConnectionFailsClosed(t *testing.T) {
 	// The LocalAPI goes away.
 	api.stop(errors.New("connection refused"))
 	tn.reset(errors.New("connection refused"))
+	if epoch, ok := tn.Available(); ok || epoch != 1 {
+		t.Errorf("Available() = %d, %v after an outage; want epoch 1, unavailable", epoch, ok)
+	}
 	if _, err := check(t, tn, bound, ourTailnetAddr, node2Addr); err == nil {
 		t.Error("bound device accepted while the LocalAPI is unavailable")
 	}
@@ -355,8 +358,9 @@ func TestAddressReuseKeepsBindings(t *testing.T) {
 	tn.mut.Lock()
 	tn.peers = map[tailcfg.StableNodeID]*peer{"n5": {addrs: []netip.Addr{netip.MustParseAddr("100.64.0.2")}, since: time.Now()}}
 	tn.mut.Unlock()
-	// A connection established before the table learned of n5 may have come
-	// from the previous owner, and is not authorized.
+	// A connection opened before the table learned of n5, for instance one
+	// whose handshake spanned the hand-over, may have come from the
+	// previous owner, and is not authorized.
 	if node, err := tn.CheckConnection(context.Background(), fresh, ourTailnetAddr, node2Addr, true, time.Now().Add(-time.Second)); err != nil || node != "" {
 		t.Errorf("CheckConnection for a connection older than the owner = %q, %v; want no node", node, err)
 	}

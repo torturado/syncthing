@@ -434,9 +434,10 @@ func (t *Tailnet) enabled() bool {
 }
 
 // inUse reports whether the configuration needs the tailnet: for discovery,
-// for auto-accept, or to keep checking devices that the tailnet authorized.
+// for auto-accept, for listening, or to keep checking devices that the
+// tailnet authorized.
 func inUse(cfg config.Configuration) bool {
-	if cfg.Options.TailscaleDiscoveryEnabled || cfg.Options.TailscaleAutoAcceptDevices {
+	if cfg.Options.TailscaleDiscoveryEnabled || cfg.Options.TailscaleAutoAcceptDevices || cfg.Options.TailscaleListenOnly {
 		return true
 	}
 	return slices.ContainsFunc(cfg.Devices, func(dev config.DeviceConfiguration) bool {
@@ -478,6 +479,17 @@ func (t *Tailnet) bepAddresses(p *peer) []string {
 		addrs[i] = "tcp://" + netip.AddrPortFrom(addr, t.port).String()
 	}
 	return addrs
+}
+
+// Addresses returns our tailnet addresses, or nothing while the tailnet is
+// unavailable.
+func (t *Tailnet) Addresses() []netip.Addr {
+	t.mut.Lock()
+	defer t.mut.Unlock()
+	if t.err != nil {
+		return nil
+	}
+	return slices.Clone(t.self)
 }
 
 // Error returns why the tailnet is currently unavailable, if it is.

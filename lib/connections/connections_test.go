@@ -36,6 +36,7 @@ import (
 
 type fakeTailnet struct {
 	nodes       map[string][]netip.Addr
+	addrs       []netip.Addr
 	epoch       uint64
 	unavailable bool
 }
@@ -51,6 +52,8 @@ func (fakeTailnet) CheckEstablished(context.Context, protocol.DeviceID, net.Addr
 func (f fakeTailnet) NodeAddresses(node string) []netip.Addr { return f.nodes[node] }
 
 func (f fakeTailnet) Available() (uint64, bool) { return f.epoch, !f.unavailable }
+
+func (f fakeTailnet) Addresses() []netip.Addr { return f.addrs }
 
 func (fakeTailnet) Updates() <-chan struct{} { return nil }
 
@@ -138,6 +141,44 @@ func TestSweepTailnetConnections(t *testing.T) {
 	}
 	if _, ok := s.tailnetConns.Load("cleared"); ok {
 		t.Error("a device that is no longer bound is still tracked")
+	}
+}
+
+func TestListenOnlyKeepsListenersOutOfSharedRegistry(t *testing.T) {
+	// Dials and discovery announcements reuse sockets from the shared
+	// registry, falling back to any compatible one; in listen-only mode
+	// listening sockets are bound to tailnet addresses and must stay out.
+	cfg := config.New(protocol.LocalDeviceID)
+	cfg.Options.RawListenAddresses = []string{"tcp://0.0.0.0:0"}
+	cfg.Options.TailscaleListenOnly = true
+	wcfg := config.Wrap("", cfg, protocol.LocalDeviceID, events.NoopLogger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sup := suture.New("test", suture.Spec{PassThroughPanics: true})
+	sup.ServeBackground(ctx)
+	s := &service{
+		Supervisor:     sup,
+		cfg:            wcfg,
+		conns:          make(chan internalConn),
+		natService:     nat.NewService(protocol.LocalDeviceID, wcfg),
+		registry:       registry.New(),
+		lanChecker:     &lanChecker{wcfg},
+		tailnet:        fakeTailnet{addrs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}},
+		evLogger:       events.NoopLogger,
+		listeners:      make(map[string]genericListener),
+		listenerTokens: make(map[string]suture.ServiceToken),
+	}
+	s.updateListeners(cfg)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for s.tailnetRegistry == nil || s.tailnetRegistry.Get("tcp", func(any) bool { return true }) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the listener did not register in the listen-only registry")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := s.registry.Get("tcp", func(any) bool { return true }); got != nil {
+		t.Errorf("listen-only listener registered %v in the shared registry", got)
 	}
 }
 
@@ -674,5 +715,55 @@ func TestHandleHellosRequiresTailnetNodeForBoundDevice(t *testing.T) {
 		t.Fatal("bound device admitted on a connection the tailnet did not authorize")
 	case <-time.After(5 * time.Second):
 		t.Fatal("connection neither closed nor admitted")
+	}
+}
+
+func TestTailnetListenAddresses(t *testing.T) {
+	tailnet := fakeTailnet{addrs: []netip.Addr{netip.MustParseAddr("100.64.0.1"), netip.MustParseAddr("fd7a:115c:a1e0::1")}}
+	cases := []struct {
+		listen     []string
+		listenOnly bool
+		tailnet    fakeTailnet
+		want       []string
+	}{
+		{
+			// The default listeners, relay included, become TCP and QUIC on
+			// each tailnet address.
+			listen: []string{"default"}, listenOnly: true, tailnet: tailnet,
+			want: []string{"quic://100.64.0.1:22000", "quic://[fd7a:115c:a1e0::1]:22000", "tcp://100.64.0.1:22000", "tcp://[fd7a:115c:a1e0::1]:22000"},
+		},
+		{
+			listen: []string{"tcp4://0.0.0.0:22001", "quic6://[::]:22002"}, listenOnly: true, tailnet: tailnet,
+			want: []string{"quic6://[fd7a:115c:a1e0::1]:22002", "tcp4://100.64.0.1:22001"},
+		},
+		{
+			// An opaque URL has no host to bind to the tailnet: dropped.
+			listen: []string{"tcp:22000", "tcp://user@0.0.0.0:22003"}, listenOnly: true, tailnet: tailnet,
+			want: []string{"tcp://100.64.0.1:22003", "tcp://[fd7a:115c:a1e0::1]:22003"},
+		},
+		{
+			// A listener without a port uses the default one.
+			listen: []string{"tcp4://0.0.0.0", "quic4://0.0.0.0:"}, listenOnly: true, tailnet: tailnet,
+			want: []string{"quic4://100.64.0.1:22000", "tcp4://100.64.0.1:22000"},
+		},
+		{
+			// No tailnet address: nothing listens.
+			listen: []string{"default"}, listenOnly: true,
+			want: nil,
+		},
+		{
+			listen: []string{"tcp://0.0.0.0:22000"}, tailnet: tailnet,
+			want: []string{"tcp://0.0.0.0:22000"},
+		},
+	}
+	for _, tc := range cases {
+		cfg := config.New(protocol.LocalDeviceID)
+		cfg.Options.RawListenAddresses = tc.listen
+		cfg.Options.TailscaleListenOnly = tc.listenOnly
+		got := (&service{tailnet: tc.tailnet}).listenAddresses(cfg)
+		slices.Sort(got)
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("listen %v, listen-only %v, tailnet %v: got %v, want %v", tc.listen, tc.listenOnly, tc.tailnet.addrs, got, tc.want)
+		}
 	}
 }

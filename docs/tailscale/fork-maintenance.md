@@ -25,7 +25,8 @@ are what someone who wants the integration on a released version has to build.
      dependency added back.
    - It stops at the first code conflict and leaves the tree there.
 2. Those remaining conflicts were resolved by hand, as described below.
-3. Each resolved tree was built, and then ran two suites:
+3. Each resolved tree was built with `go run build.go assets` and
+   `go build ./...`, and then ran two suites:
    - the full unit suite with the race detector,
      `go test -race ./lib/... ./cmd/...`;
    - the end-to-end tailnet suite, `go test -tags tailscale_e2e ./test/tailscale`.
@@ -34,8 +35,8 @@ are what someone who wants the integration on a released version has to build.
 
 | Release | Released | Upstream commits from release to base | Code conflict hunks | go.mod and go.sum | Lines resolved by hand | Build | Unit tests with `-race` | End-to-end |
 |---|---|---|---|---|---|---|---|---|
-| v2.1.7 | 2026-10-20 | 8 | 3 | clean | 13 | ok | pass (64 s) | pass (350 s) |
-| v2.1.6 | 2026-10-05 | 22 | 3 | regenerated | 13 | ok | pass (62 s) | pass (347 s) |
+| v2.1.7 | 2026-10-21 | 8 | 3 | clean | 13 | ok | pass (64 s) | pass (350 s) |
+| v2.1.6 | 2026-10-06 | 22 | 3 | regenerated | 13 | ok | pass (62 s) | pass (347 s) |
 | v2.1.5 | 2026-09-08 | 35 | 3 | regenerated | 13 | ok | pass (96 s) | pass (375 s) |
 
 The code conflict hunks are the same on every release. There are two in
@@ -85,7 +86,9 @@ releases do not have that code yet, and the hunk conflicts in `cache.go` and
 The resolution keeps the release's `cache.go` and `manager.go` and adds two
 things:
 
-- the manager's `tailnet` field, which is one line;
+- in `NewManager`, the `tailnet: tailnet,` entry that the conflicting hunk
+  adds to the initializer, which is one line (without it, Tailscale discovery
+  never registers);
 - the same rule in the release's inline lookup, which is nine lines:
 
 ```go

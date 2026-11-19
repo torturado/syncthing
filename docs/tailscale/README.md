@@ -129,7 +129,9 @@ into an ordinary one, clear its `tailnetNodeID` in the advanced settings.
 
 ## Listening only on the tailnet
 
-Set `tailscaleListenOnly` to accept BEP connections only through the tailnet.
+Set `tailscaleListenOnly` to accept BEP connections only on this node's
+tailnet addresses. This restricts where Syncthing listens. It does not
+authorize anyone: every connection is still checked as usual.
 
 ### What changes
 

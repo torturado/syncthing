@@ -125,6 +125,20 @@ var tlsVersionNames = map[uint16]string{
 	tls.VersionTLS13: "TLS1.3",
 }
 
+// A Tailnet vouches for connections with tailnet peers; lib/tailscale
+// implements it.
+type Tailnet interface {
+	// CheckConnection is called for every authenticated connection before
+	// the Hello exchange; direct is false for relayed connections. It may
+	// add the device to the configuration. It returns the tailnet node that
+	// authorizes the connection, if any; an error rejects the connection.
+	CheckConnection(ctx context.Context, deviceID protocol.DeviceID, local, remote net.Addr, direct bool) (node string, err error)
+	// CheckEstablished is called for established connections whenever
+	// Updates fires; an error closes the connection.
+	CheckEstablished(ctx context.Context, deviceID protocol.DeviceID, remote net.Addr) error
+	Updates() <-chan struct{}
+}
+
 // Service listens and dials all configured unconnected devices, via supported
 // dialers. Successful connections are handed to the model.
 type Service interface {
@@ -164,6 +178,7 @@ type service struct {
 	model                Model
 	tlsCfg               *tls.Config
 	discoverer           discover.Finder
+	tailnet              Tailnet
 	conns                chan internalConn
 	hellos               chan *connWithHello
 	bepProtocolName      string
@@ -184,7 +199,9 @@ type service struct {
 	listenerTokens map[string]suture.ServiceToken
 }
 
-func NewService(cfg config.Wrapper, myID protocol.DeviceID, mdl Model, tlsCfg *tls.Config, discoverer discover.Finder, bepProtocolName string, tlsDefaultCommonName string, evLogger events.Logger, registry *registry.Registry, keyGen *protocol.KeyGenerator) Service {
+// NewService returns the connection service. tailnet may be nil, in which
+// case no connection is checked against a tailnet.
+func NewService(cfg config.Wrapper, myID protocol.DeviceID, mdl Model, tlsCfg *tls.Config, discoverer discover.Finder, bepProtocolName string, tlsDefaultCommonName string, evLogger events.Logger, registry *registry.Registry, keyGen *protocol.KeyGenerator, tailnet Tailnet) Service {
 	spec := svcutil.SpecWithInfoLogger()
 	service := &service{
 		Supervisor:              suture.New("connections.Service", spec),
@@ -195,6 +212,7 @@ func NewService(cfg config.Wrapper, myID protocol.DeviceID, mdl Model, tlsCfg *t
 		model:                mdl,
 		tlsCfg:               tlsCfg,
 		discoverer:           discoverer,
+		tailnet:              tailnet,
 		conns:                make(chan internalConn),
 		hellos:               make(chan *connWithHello),
 		bepProtocolName:      bepProtocolName,
@@ -230,6 +248,9 @@ func NewService(cfg config.Wrapper, myID protocol.DeviceID, mdl Model, tlsCfg *t
 	service.Add(svcutil.AsService(service.handleConns, fmt.Sprintf("%s/handleConns", service)))
 	service.Add(svcutil.AsService(service.handleHellos, fmt.Sprintf("%s/handleHellos", service)))
 	service.Add(service.natService)
+	if tailnet != nil {
+		service.Add(svcutil.AsService(service.recheckTailnetConnections, fmt.Sprintf("%s/recheckTailnetConnections", service)))
+	}
 
 	svcutil.OnSupervisorDone(service.Supervisor, func() {
 		service.cfg.Unsubscribe(service.limiter)
@@ -287,6 +308,17 @@ func (s *service) handleConns(ctx context.Context) error {
 
 		_ = c.SetDeadline(time.Now().Add(20 * time.Second))
 		go func() {
+			if s.tailnet != nil {
+				direct := c.connType.Transport() != "relay"
+				node, err := s.tailnet.CheckConnection(ctx, remoteID, c.LocalAddr(), c.RemoteAddr(), direct)
+				if err != nil {
+					slog.WarnContext(ctx, "Connection rejected by tailnet authorization", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slog.String("type", c.Type()), slogutil.Error(err))
+					c.Close()
+					return
+				}
+				c.tailnetNode = node
+			}
+
 			// Exchange Hello messages with the peer.
 			outgoing := s.helloForDevice(remoteID)
 			incoming, err := protocol.ExchangeHello(c, outgoing)
@@ -401,6 +433,15 @@ func (s *service) handleHellos(ctx context.Context) error {
 			continue
 		}
 
+		// A device bound to a tailnet node is only admitted on a connection
+		// that the tailnet authorized for that node. The device may have been
+		// added by another connection while this one was in its Hello.
+		if deviceCfg.TailnetNodeID != "" && c.tailnetNode != deviceCfg.TailnetNodeID {
+			slog.WarnContext(ctx, "Connection rejected: the tailnet did not authorize it for the device's node", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slog.Any("type", c.Type()))
+			c.Close()
+			continue
+		}
+
 		// Verify the name on the certificate. By default we set it to
 		// "syncthing" when generating, but the user may have replaced
 		// the certificate and used another name.
@@ -441,6 +482,29 @@ func (s *service) handleHellos(ctx context.Context) error {
 
 		s.model.AddConnection(protoConn, hello)
 		continue
+	}
+}
+
+// recheckTailnetConnections closes the connections of devices bound to a
+// tailnet node as soon as the tailnet stops vouching for them.
+func (s *service) recheckTailnetConnections(ctx context.Context) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.tailnet.Updates():
+		}
+		for _, dev := range s.cfg.RawCopy().Devices {
+			if dev.TailnetNodeID == "" {
+				continue
+			}
+			for _, conn := range s.connectionsForDevice(dev.DeviceID) {
+				if err := s.tailnet.CheckEstablished(ctx, dev.DeviceID, conn.RemoteAddr()); err != nil {
+					slog.InfoContext(ctx, "Closing connection no longer authorized by the tailnet", dev.DeviceID.LogAttr(), slogutil.Address(conn.RemoteAddr()), slogutil.Error(err))
+					conn.Close(err)
+				}
+			}
+		}
 	}
 }
 
@@ -1346,6 +1410,12 @@ func (c *deviceConnectionTracker) accountAddedConnection(conn protocol.Connectio
 
 	// Close any connections we no longer want to retain.
 	c.closeWorsePriorityConnectionsLocked(d, conn.Priority()-upgradeThreshold)
+}
+
+func (c *deviceConnectionTracker) connectionsForDevice(d protocol.DeviceID) []protocol.Connection {
+	c.connectionsMut.Lock()
+	defer c.connectionsMut.Unlock()
+	return slices.Clone(c.connections[d])
 }
 
 func (c *deviceConnectionTracker) accountRemovedConnection(conn protocol.Connection) {

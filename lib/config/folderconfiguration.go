@@ -282,10 +282,12 @@ func (f *FolderConfiguration) prepare(myID protocol.DeviceID, existingDevices ma
 	// - there are no duplicate devices
 	// - we are part of the devices
 	// - folder is not shared in trusted mode with an untrusted device
+	// - folder is not shared with a tailnet device whose grant omits it
 	f.Devices = ensureExistingDevices(f.Devices, existingDevices)
 	f.Devices = ensureNoDuplicateFolderDevices(f.Devices)
 	f.Devices = ensureDevicePresent(f.Devices, myID)
 	f.Devices = ensureNoUntrustedTrustingSharing(f, f.Devices, existingDevices)
+	f.Devices = ensureTailnetGrants(f, f.Devices, existingDevices)
 
 	slices.SortFunc(f.Devices, func(a, b FolderDeviceConfiguration) int {
 		return a.DeviceID.Compare(b.DeviceID)

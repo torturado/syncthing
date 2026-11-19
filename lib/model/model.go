@@ -1264,7 +1264,7 @@ func (m *model) ClusterConfig(conn protocol.Connection, cm *protocol.ClusterConf
 			changedFcfg := make(map[string]config.FolderConfiguration)
 			haveFcfg := cfg.FolderMap()
 			for _, folder := range cm.Folders {
-				if deviceCfg.IgnoredFolder(folder.ID) {
+				if deviceCfg.IgnoredFolder(folder.ID) || !deviceCfg.TailnetAllowsFolder(folder.ID) {
 					continue
 				}
 				from, ok := haveFcfg[folder.ID]

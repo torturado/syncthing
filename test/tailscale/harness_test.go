@@ -36,7 +36,7 @@ const (
 	apiKey         = "tailnet-e2e"
 )
 
-var syncthingBinary string
+var syncthingBinary, localAPIProxyBinary string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "syncthing-tailnet-e2e")
@@ -51,6 +51,14 @@ func TestMain(m *testing.M) {
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "building syncthing:", err)
+		os.Exit(1)
+	}
+	localAPIProxyBinary = filepath.Join(dir, "localapiproxy")
+	build = exec.Command("go", "build", "-tags", "tailscale_e2e", "-o", localAPIProxyBinary, "./localapiproxy")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")
+	build.Stdout, build.Stderr = os.Stderr, os.Stderr
+	if err := build.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "building localapiproxy:", err)
 		os.Exit(1)
 	}
 	code := m.Run()
@@ -113,14 +121,23 @@ const derpMap = `regions:
 `
 
 // nodeScript starts tailscaled with a kernel TUN device, joins the tailnet
-// and runs Syncthing in the foreground.
+// and runs Syncthing in the foreground. Without an auth key the node stays
+// off the tailnet and is only reachable on the Docker network. Syncthing
+// reaches the LocalAPI through localapiproxy, which cutLocalAPI uses.
 const nodeScript = `set -e
 mkdir -p /var/lib/tailscale /data
-tailscaled --state=/var/lib/tailscale/tailscaled.state >>/var/log/tailscaled.log 2>&1 &
-i=0; until [ -S /var/run/tailscale/tailscaled.sock ] || [ $i -gt 100 ]; do i=$((i+1)); sleep 0.1; done
-tailscale up --login-server=http://headscale:8080 --authkey="$TS_AUTHKEY" --hostname="$NODE_NAME" --accept-dns=false
+if [ -n "$TS_AUTHKEY" ]; then
+  ` + tailscaledCommand + ` &
+  i=0; until [ -S /var/run/tailscale/real.sock ] || [ $i -gt 100 ]; do i=$((i+1)); sleep 0.1; done
+  /usr/local/bin/localapiproxy /var/run/tailscale/tailscaled.sock /var/run/tailscale/real.sock >>/var/log/localapiproxy.log 2>&1 &
+  i=0; until [ -S /var/run/tailscale/tailscaled.sock ] || [ $i -gt 100 ]; do i=$((i+1)); sleep 0.1; done
+  tailscale up --login-server=http://headscale:8080 --authkey="$TS_AUTHKEY" --hostname="$NODE_NAME" --accept-dns=false
+fi
 exec /usr/local/bin/syncthing serve --home=/data --no-browser --no-upgrade --no-restart --gui-address=0.0.0.0:8384 --gui-apikey=` + apiKey + ` >>/var/log/syncthing.log 2>&1
 `
+
+// tailscaledCommand runs tailscaled on the real LocalAPI socket.
+const tailscaledCommand = `TS_DEBUG_FIREWALL_MODE=nftables tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/real.sock >>/var/log/tailscaled.log 2>&1`
 
 func newHarness(t *testing.T, policy string) *harness {
 	t.Helper()
@@ -145,6 +162,8 @@ func newHarness(t *testing.T, policy string) *harness {
 		"-v", filepath.Join(h.dir, "derp.yaml")+":/etc/headscale/derp.yaml:ro",
 		"-v", h.dir+":/policy:ro",
 		headscaleImage, "serve", "-c", "/etc/headscale/config.yaml")
+	// The policy is read through the directory mount so that setPolicy can
+	// replace the file.
 	waitFor(t, "headscale", 30*time.Second, func() bool {
 		_, err := h.dockerErr("exec", h.control, "headscale", "users", "list")
 		return err == nil
@@ -204,6 +223,17 @@ func (h *harness) jsonOut(v any, args ...string) {
 	}
 }
 
+// setPolicy replaces the tailnet policy and makes Headscale reload it.
+// Headscale keeps the old policy if the new one is invalid, so the new one
+// is checked first.
+func (h *harness) setPolicy(policy string) {
+	h.t.Helper()
+	h.write("policy.next.json", policy)
+	h.docker("exec", h.control, "headscale", "policy", "check", "-f", "/policy/policy.next.json")
+	h.write("policy.json", policy)
+	h.docker("kill", "-s", "HUP", h.control)
+}
+
 // authKey returns a pre-authentication key; nodes that use it are tagged
 // with the given tags, or owned by the user when there are none.
 func (h *harness) authKey(tags ...string) string {
@@ -233,8 +263,9 @@ func (h *harness) startNode(name, authKey string) *node {
 	n := &node{h: h, name: name, container: h.prefix + "-" + name}
 	h.docker("run", "-d", "--name", n.container, "--hostname", name, "--network", h.network,
 		"--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW", "--device", "/dev/net/tun",
-		"-e", "TS_DEBUG_FIREWALL_MODE=nftables", "-e", "TS_AUTHKEY="+authKey, "-e", "NODE_NAME="+name,
+		"-e", "TS_AUTHKEY="+authKey, "-e", "NODE_NAME="+name,
 		"-v", syncthingBinary+":/usr/local/bin/syncthing:ro",
+		"-v", localAPIProxyBinary+":/usr/local/bin/localapiproxy:ro",
 		"-v", filepath.Join(h.dir, "node.sh")+":/node.sh:ro",
 		"-p", "127.0.0.1::8384",
 		"--entrypoint", "sh", tailscaleImage, "/node.sh")
@@ -267,8 +298,58 @@ func (h *harness) startNode(name, authKey string) *node {
 		cfg.Options.AutoUpgradeIntervalH = 0
 		cfg.Options.RawListenAddresses = []string{"tcp://0.0.0.0:22000"}
 		cfg.Options.ReconnectIntervalS = 5
+		// Auto-accepted folders land in /data/<label>.
+		cfg.Defaults.Folder.Path = "/data"
+		cfg.Defaults.Folder.RescanIntervalS = 5
 	})
 	return n
+}
+
+// lanIP returns the node's address on the Docker network.
+func (n *node) lanIP() string {
+	n.h.t.Helper()
+	return n.h.docker("inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", n.container)
+}
+
+// deleteNode removes the node from the tailnet, as an admin expelling it.
+func (h *harness) deleteNode(n *node) {
+	h.t.Helper()
+	var nodes []struct {
+		ID   uint64 `json:"id"`
+		Name string `json:"name"`
+	}
+	h.jsonOut(&nodes, "exec", h.control, "headscale", "nodes", "list", "-o", "json")
+	for _, hn := range nodes {
+		if hn.Name == n.name {
+			h.docker("exec", h.control, "headscale", "nodes", "delete", "-i", fmt.Sprint(hn.ID), "--force")
+			return
+		}
+	}
+	h.t.Fatalf("node %s not found in headscale", n.name)
+}
+
+func (n *node) config() config.Configuration {
+	n.h.t.Helper()
+	var cfg config.Configuration
+	n.rest(http.MethodGet, "/rest/config", nil, &cfg)
+	return cfg
+}
+
+func (n *node) pendingDevices() map[string]any {
+	n.h.t.Helper()
+	var pending map[string]any
+	n.rest(http.MethodGet, "/rest/cluster/pending/devices", nil, &pending)
+	return pending
+}
+
+// completion returns how complete peer is on folder, as this node sees it.
+func (n *node) completion(folder string, peer *node) float64 {
+	n.h.t.Helper()
+	var res struct {
+		Completion float64 `json:"completion"`
+	}
+	n.rest(http.MethodGet, "/rest/db/completion?folder="+folder+"&device="+peer.id.String(), nil, &res)
+	return res.Completion
 }
 
 func (n *node) exec(args ...string) string {
@@ -276,10 +357,23 @@ func (n *node) exec(args ...string) string {
 	return n.h.docker(append([]string{"exec", n.container}, args...)...)
 }
 
-// tailnetIPs returns the node's tailnet addresses, IPv4 first.
+// tailnetIPs returns the node's tailnet addresses, IPv4 first. It asks
+// tailscaled directly, so it works while the LocalAPI is cut.
 func (n *node) tailnetIPs() []string {
 	n.h.t.Helper()
-	return strings.Fields(n.exec("tailscale", "ip"))
+	return strings.Fields(n.exec("tailscale", "--socket=/var/run/tailscale/real.sock", "ip"))
+}
+
+// cutLocalAPI makes the LocalAPI unreachable for Syncthing while tailscaled
+// keeps running; restoreLocalAPI undoes it.
+func (n *node) cutLocalAPI() {
+	n.h.t.Helper()
+	n.exec("pkill", "-USR1", "localapiproxy")
+}
+
+func (n *node) restoreLocalAPI() {
+	n.h.t.Helper()
+	n.exec("pkill", "-USR2", "localapiproxy")
 }
 
 func (n *node) restErr(method, path string, body, out any) error {

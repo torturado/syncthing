@@ -467,22 +467,6 @@ func (s *service) handleHellos(ctx context.Context) error {
 			continue
 		}
 
-		// A device bound to a tailnet node is only admitted on a connection
-		// that the tailnet authorized for that node, with no outage since;
-		// the device may have been added by another connection while this
-		// one was in its Hello. The connection is registered for re-checks
-		// first, so that an outage sweep either sees it or ran before this
-		// check, which then sees the new outage epoch.
-		if deviceCfg.TailnetNodeID != "" {
-			s.tailnetConns.Store(c.connectionID, tailnetConn{deviceID: remoteID, conn: c})
-			if !s.tailnetAdmits(deviceCfg, c) {
-				s.tailnetConns.Delete(c.connectionID)
-				slog.WarnContext(ctx, "Connection rejected: the tailnet did not authorize it for the device's node", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slog.Any("type", c.Type()))
-				c.Close()
-				continue
-			}
-		}
-
 		// Verify the name on the certificate. By default we set it to
 		// "syncthing" when generating, but the user may have replaced
 		// the certificate and used another name.
@@ -501,6 +485,24 @@ func (s *service) handleHellos(ctx context.Context) error {
 			slog.ErrorContext(ctx, "Bad certificate from remote", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slogutil.Error(err))
 			c.Close()
 			continue
+		}
+
+		// A device bound to a tailnet node is only admitted on a connection
+		// that the tailnet authorized for that node, with no outage since;
+		// the device may have been added by another connection while this
+		// one was in its Hello. The connection is registered for re-checks
+		// first, so that an outage sweep either sees it or ran before this
+		// check, which then sees the new outage epoch.
+		// This is the last check before BEP starts, so that nothing else
+		// leaves a registered connection behind.
+		if deviceCfg.TailnetNodeID != "" {
+			s.tailnetConns.Store(c.connectionID, tailnetConn{deviceID: remoteID, conn: c})
+			if !s.tailnetAdmits(deviceCfg, c) {
+				s.tailnetConns.Delete(c.connectionID)
+				slog.WarnContext(ctx, "Connection rejected: the tailnet did not authorize it for the device's node", remoteID.LogAttr(), slogutil.Address(c.RemoteAddr()), slog.Any("type", c.Type()))
+				c.Close()
+				continue
+			}
 		}
 
 		// Wrap the connection in rate limiters. The limiter itself will
@@ -536,36 +538,48 @@ func (s *service) recheckTailnetConnections(ctx context.Context) error {
 			return ctx.Err()
 		case <-s.tailnet.Updates():
 		}
-		// A connection is closed at once, without the BEP farewell, when an
-		// outage has come since it was authorized. Otherwise each one is
-		// checked on its own, so that a slow answer or a slow configuration
-		// commit holds up neither the other connections nor the next
-		// update; a connection whose previous check is still running is
-		// skipped.
-		epoch, available := s.tailnet.Available()
-		s.tailnetConns.Range(func(id, value any) bool {
-			tc, ok := value.(tailnetConn)
-			if !ok {
-				return true
-			}
-			if !available || tc.conn.tailnetEpoch != epoch {
-				slog.InfoContext(ctx, "Closing connection no longer authorized by the tailnet", tc.deviceID.LogAttr(), slogutil.Address(tc.conn.RemoteAddr()), slogutil.Error(errTailnetUnavailable))
-				tc.conn.Close()
-				return true
-			}
-			if _, running := s.tailnetChecks.LoadOrStore(id, struct{}{}); running {
-				return true
-			}
-			go func() {
-				defer s.tailnetChecks.Delete(id)
-				if err := s.tailnet.CheckEstablished(ctx, tc.deviceID, tc.conn.RemoteAddr(), tc.conn.handshakeStarted); err != nil {
-					slog.InfoContext(ctx, "Closing connection no longer authorized by the tailnet", tc.deviceID.LogAttr(), slogutil.Address(tc.conn.RemoteAddr()), slogutil.Error(err))
-					tc.conn.Close()
-				}
-			}()
-			return true
-		})
+		s.sweepTailnetConnections(ctx)
 	}
+}
+
+// sweepTailnetConnections checks the connections of bound devices again.
+func (s *service) sweepTailnetConnections(ctx context.Context) {
+	// A connection is closed at once, without the BEP farewell, when an
+	// outage has come since it was authorized. Otherwise each one is
+	// checked on its own, so that a slow answer or a slow configuration
+	// commit holds up neither the other connections nor the next
+	// update; a connection whose previous check is still running is
+	// skipped. Closing runs on its own too, as a TLS close can wait for
+	// a slow peer.
+	s.tailnetConns.Range(func(id, value any) bool {
+		tc, ok := value.(tailnetConn)
+		if !ok {
+			return true
+		}
+		if dev, ok := s.cfg.Device(tc.deviceID); !ok || dev.TailnetNodeID == "" {
+			// No longer bound: an ordinary connection from now on.
+			s.tailnetConns.Delete(id)
+			return true
+		}
+		// Read for each connection: one may have been admitted after
+		// the tailnet came back while this sweep runs.
+		if epoch, available := s.tailnet.Available(); !available || tc.conn.tailnetEpoch != epoch {
+			slog.InfoContext(ctx, "Closing connection no longer authorized by the tailnet", tc.deviceID.LogAttr(), slogutil.Address(tc.conn.RemoteAddr()), slogutil.Error(errTailnetUnavailable))
+			go tc.conn.Close()
+			return true
+		}
+		if _, running := s.tailnetChecks.LoadOrStore(id, struct{}{}); running {
+			return true
+		}
+		go func() {
+			defer s.tailnetChecks.Delete(id)
+			if err := s.tailnet.CheckEstablished(ctx, tc.deviceID, tc.conn.RemoteAddr(), tc.conn.handshakeStarted); err != nil {
+				slog.InfoContext(ctx, "Closing connection no longer authorized by the tailnet", tc.deviceID.LogAttr(), slogutil.Address(tc.conn.RemoteAddr()), slogutil.Error(err))
+				tc.conn.Close()
+			}
+		}()
+		return true
+	})
 }
 
 func (s *service) connect(ctx context.Context) error {

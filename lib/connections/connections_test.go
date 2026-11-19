@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -103,6 +104,40 @@ func TestBoundDeviceDialsItsNode(t *testing.T) {
 	slices.Sort(got)
 	if want := []string{"tcp://100.64.0.2:22000", "tcp://[fd7a:115c:a1e0::2]:22000"}; !slices.Equal(got, want) {
 		t.Errorf("addresses %v, want %v", got, want)
+	}
+}
+
+func TestSweepTailnetConnections(t *testing.T) {
+	bound, unbound := protocol.DeviceID{1}, protocol.DeviceID{2}
+	cfg := config.New(protocol.LocalDeviceID)
+	cfg.Devices = append(cfg.Devices,
+		config.DeviceConfiguration{DeviceID: bound, TailnetNodeID: "n1"},
+		config.DeviceConfiguration{DeviceID: unbound},
+	)
+	s := &service{
+		cfg:     config.Wrap("", cfg, protocol.LocalDeviceID, events.NoopLogger),
+		tailnet: fakeTailnet{epoch: 4},
+	}
+	stale := &closeRecordingConn{closed: make(chan struct{})}
+	cleared := &closeRecordingConn{closed: make(chan struct{})}
+	s.tailnetConns.Store("stale", tailnetConn{deviceID: bound, conn: internalConn{tlsConn: stale, tailnetEpoch: 3}})
+	// The device's binding was cleared: it is an ordinary connection now.
+	s.tailnetConns.Store("cleared", tailnetConn{deviceID: unbound, conn: internalConn{tlsConn: cleared, tailnetEpoch: 3}})
+
+	s.sweepTailnetConnections(context.Background())
+
+	select {
+	case <-stale.closed:
+	case <-time.After(5 * time.Second):
+		t.Error("a connection authorized before the outage was not closed")
+	}
+	select {
+	case <-cleared.closed:
+		t.Error("the connection of a device that is no longer bound was closed")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, ok := s.tailnetConns.Load("cleared"); ok {
+		t.Error("a device that is no longer bound is still tracked")
 	}
 }
 
@@ -617,16 +652,22 @@ func TestHandleHellosRequiresTailnetNodeForBoundDevice(t *testing.T) {
 	cfg.Devices = append(cfg.Devices, config.DeviceConfiguration{DeviceID: bound, TailnetNodeID: "n1"})
 	mdl := admissionModel{added: make(chan protocol.DeviceID, 1)}
 	s := &service{
-		cfg:    config.Wrap("", cfg, protocol.LocalDeviceID, events.NoopLogger),
-		model:  mdl,
-		hellos: make(chan *connWithHello),
+		cfg:                  config.Wrap("", cfg, protocol.LocalDeviceID, events.NoopLogger),
+		model:                mdl,
+		hellos:               make(chan *connWithHello),
+		tlsDefaultCommonName: "syncthing",
+	}
+	cert := mustGetCert(t)
+	remoteCert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go s.handleHellos(ctx)
 
 	conn := &closeRecordingConn{closed: make(chan struct{})}
-	s.hellos <- &connWithHello{c: internalConn{tlsConn: conn, connType: connTypeTCPServer}, remoteID: bound}
+	s.hellos <- &connWithHello{c: internalConn{tlsConn: conn, connType: connTypeTCPServer}, remoteID: bound, remoteCert: remoteCert}
 	select {
 	case <-conn.closed:
 	case <-mdl.added:

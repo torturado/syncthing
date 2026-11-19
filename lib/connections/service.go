@@ -1057,7 +1057,8 @@ func (s *service) listenAddresses(cfg config.Configuration) []string {
 	var bound []string
 	for _, addr := range addrs {
 		uri, err := url.Parse(addr)
-		if err != nil {
+		// An opaque URL such as tcp:22000 has no host to replace.
+		if err != nil || uri.Opaque != "" {
 			continue
 		}
 		family := ""
@@ -1080,8 +1081,9 @@ func (s *service) listenAddresses(cfg config.Configuration) []string {
 			if family == "4" && !ip.Is4() || family == "6" && !ip.Is6() {
 				continue
 			}
-			u := *uri
-			u.Host = net.JoinHostPort(ip.String(), uri.Port())
+			// A fresh URL, so that nothing of the configured one but its
+			// scheme, port and options survives.
+			u := url.URL{Scheme: uri.Scheme, Host: net.JoinHostPort(ip.String(), uri.Port()), RawQuery: uri.RawQuery}
 			bound = append(bound, u.String())
 		}
 	}

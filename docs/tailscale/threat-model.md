@@ -69,8 +69,9 @@ Out of scope:
   presents the expected certificate.
 - **R2. Which connections can be authorized.** A connection can be authorized
   only if all of these hold:
-  - It is direct TCP or QUIC. Relayed connections never are, because their
-    endpoints belong to the relay.
+  - It is direct TCP. Relayed connections never are, because their endpoints
+    belong to the relay. QUIC connections never are either: outbound QUIC shares
+    a wildcard UDP socket, so its local address cannot be checked.
   - Its local address is one of our tailnet addresses.
   - Its remote address is not one of ours. This excludes other users on our own
     host.
@@ -80,6 +81,10 @@ Out of scope:
   - The node is not expired.
   - The node carries `tag:syncthing`.
   - The node holds `syncthing.net/cap/syncthing` with a value that parses.
+
+  The capability is the authorization. Network grants only decide which side
+  can open the connection. Authorization does not require that the authorized
+  side could have dialed.
 - **R3. The `WhoIs` outcome affects only that connection.** Each outcome is
   handled separately:
 
@@ -98,12 +103,17 @@ Out of scope:
   folders that its grant allows (`tailnetFolders`). A node can be bound to at
   most one device.
 - **R5. Authorization is attached to the socket.** The node that the tailnet
-  authorizes is recorded on the connection before the Hello exchange. When the
-  BEP session is finally admitted, a bound device is accepted only if its
-  connection was authorized for the bound node. This covers inbound, outbound
-  and additional connections alike. The configuration change that adds a
-  device checks once more, inside the change, that neither the device nor the
-  node binding exists yet.
+  authorizes is recorded on the connection before the Hello exchange. After
+  the Hello, the tailnet is asked again, so a revocation or outage during the
+  Hello is not missed.
+
+  When the BEP session is finally admitted, a bound device is accepted only if
+  its connection was authorized for the bound node. This covers inbound,
+  outbound and additional connections alike.
+
+  The configuration change that adds a device checks once more, inside the
+  change, that the device is not known, not ignored and that its node is not
+  bound to another device. A device the user ignored is never added.
 - **R6. The grant is an upper bound.** The capability value is
   `{"folders": ["<folder ID>", ...]}`. When several grants match, their lists
   are merged. A value with no folders allows the device to join and shares
@@ -114,6 +124,12 @@ Out of scope:
   whichever mechanism tried to share it: the GUI, an introducer, or
   auto-accept. A bound device auto-accepts only listed folders. Granted folders
   that exist locally are shared with it.
+
+  On every new connection, the device's current grant is applied before the
+  Hello exchange. A device that was offline while its grant shrank therefore
+  never starts BEP with the old list. Access to a folder's data ends when the
+  commit that unshares it is published, because the model checks index
+  updates and block requests against the current configuration.
 - **R7. Re-checks and fail closed.** Every established connection of a bound
   device goes through `WhoIs` again whenever the tailnet state changes, and at
   least every 30 seconds. A failed check closes the connection, and the device's
@@ -147,8 +163,10 @@ Out of scope:
 ## Enrollment: how two devices that do not know each other connect
 
 Take a node A that already has folder `photos`, and a new node B. Both are
-tagged, both enable discovery and auto-accept, and the policy grants
-`{"folders": ["photos"]}` in both directions, A to B and B to A.
+tagged, and both enable discovery and auto-accept. The policy:
+- allows TCP port 22000 in both directions, so each side can probe and dial
+  the other;
+- grants `{"folders": ["photos"]}` in both directions, A to B and B to A.
 
 1. Each Finder sees the other node in the netmap and probes it (R9), so A
    learns B's device ID and B learns A's.
@@ -163,12 +181,21 @@ tagged, both enable discovery and auto-accept, and the policy grants
 
 Grants are directional, and each side reads the grant from the other node
 towards itself. If only B to A is granted:
-- A adds B;
+- A adds B, when it can reach B to probe it, or when B connects to it;
 - B leaves A pending;
 - nothing is shared until the reverse grant exists.
 
+If network access only allows one direction, only that side can probe and
+dial. Enrollment then still needs the grant towards the side that receives the
+connection.
+
 Enrollment is deliberately one-sided: a device never gets more than the side
 that admits it grants.
+
+The end-to-end test covers the one-way case. The test node `node-c` has
+`tag:syncthing` but not the tag that the grant names, so only the grant towards
+it exists. It adds the other node and dials it, stays pending there, and gets
+no folder.
 
 ## Scenarios
 
@@ -176,7 +203,7 @@ that admits it grants.
 
 | Case | Safe behaviour | Enforced by |
 |---|---|---|
-| S1a. A node shared in from another tailnet, or shared out to another tailnet's user. | It is not discovered and is never authorized. Its MagicDNS name is in the other tailnet's domain. Our policy also cannot give it our tags. | Domain check in the Finder and in R2. |
+| S1a. A foreign node: a node shared in to us, or a node of a foreign user that our share makes visible to us (a sharee node). | It is not discovered and is never authorized. Its MagicDNS name is in the other tailnet's domain, and our policy cannot give it our tags. Our own nodes that we share out stay in our domain and are treated like any other node of ours. | Domain check in the Finder and in R2. |
 | S1b. A new node with `tag:syncthing` but no grant. | It can be discovered, but it is not authorized. If it connects, it shows up as a pending device, exactly as an unknown device does today, and it receives no folders. We never dial it unless its device ID is configured by hand. | R2: no capability means no enrollment. The probe reveals nothing about us (R9). |
 | S1c. A node with the grant is compromised. | This is the delegated trust boundary. The node gets the folders listed in its grant and nothing more. It cannot introduce other devices (R8). It cannot obtain other folders, because the configuration enforces the grant as an upper bound (R6). It cannot impersonate another device, because TLS identity is required (R1). It cannot take over another node's binding (R4, R5), and it cannot register more than one device. Limit the damage with narrow grants, receive-only folders and versioning. | R1, R4, R5, R6, R8. |
 | S1d. An authorized node presents another device's certificate, or cycles certificates. | Without the private key, the TLS handshake fails, and the probe fails too (R9). A second device ID from an already bound node is not added and stays pending. | R1, R4, R9. |
@@ -218,9 +245,17 @@ node.
 - A device that was configured by hand and dialed at a stale address still has
   to pass TLS (R1).
 
-A narrow race remains. If an address is reassigned between a socket opening
-and its `WhoIs` call, the socket is attributed to the new owner. The peer
-still needs the device's key (R1), and later connections are checked again.
+A device found by a probe is added only if `WhoIs` names the same node that
+the peer table held when the probe ran.
+
+A narrow race remains on incoming connections. If an address is reassigned
+between the TLS handshake and its `WhoIs` call, the old owner's device can be
+bound to the new owner's node. That binding gives the old owner nothing,
+because its later connections come from another node and are refused (R4,
+R5). The new owner also gains nothing, because it does not hold the device's
+key (R1). The only effect is that the new owner's own device stays pending
+until the stale binding is removed. Reassignment within that window requires
+deleting a node and enrolling a new one in the same few milliseconds.
 
 ### S4. tailscaled is stopped, has crashed, or is unhealthy
 
@@ -260,8 +295,10 @@ Listen-only reduces exposure. It is not an authorization control.
   failed dial, which presents our certificate as any BEP dial does.
 - **Stale discovery state.** Bus notifications can be lost, so they only
   prompt a `Status` read, and `Status` is also read every 30 seconds. The
-  Finder is registered with caching disabled, so the discovery manager never
-  serves or reports an entry that the Finder no longer holds.
+  Finder is registered with both cache times zero. With both at zero, the
+  discovery manager neither reads nor stores lookups (a change to
+  `cachedFinder`), so it never serves or reports an entry that the Finder no
+  longer holds.
 - **Probe noise.** Each successful probe makes the remote Syncthing log one
   "Failed TLS handshake" warning, because the client aborts. Probes run only
   when a peer appears or its address set changes. Failed probes retry with
@@ -285,17 +322,26 @@ or later, which supports `grants` with `app` capabilities. Every node runs a
 real tailscaled with kernel TUN in its own Docker container. Unit tests cover
 the following with a fake LocalAPI:
 - the probe;
-- each `WhoIs` outcome;
+- each `WhoIs` outcome, including foreign-domain nodes;
+- expired keys;
+- relayed and self connections;
 - binding;
-- per-socket authorization;
-- the grant upper bound.
+- per-socket admission;
+- the grant upper bound;
+- the auto-accept allowlist.
+
+Headscale has no node sharing, so foreign nodes are covered only by unit tests.
+The data path itself relies on Syncthing's existing checks that index updates
+and block requests name a folder shared with the device. The tests show that
+the configuration cannot hold such a share.
 
 | Criterion | Scenario | Test |
 |---|---|---|
 | A new device with the grant syncs 100 % with no manual steps. | Enrollment | A tagged node with the grant starts with an empty configuration plus the options. It reaches 100 % completion on the granted folder, and the seeded file arrives with the same content. |
 | A device without the grant receives no folders. | S1b | A tagged node without the grant stays pending on the others. No folder is shared with it, and no file reaches it. |
-| An expelled device loses its connection in under a minute. | S2a, S2c | `headscale nodes delete`, and separately a policy that removes the grant. Measure the time until the peers report the device disconnected. |
-| With tailscaled stopped, Syncthing keeps its known devices and accepts no new ones. | S4a | **LocalAPI socket hidden while the tailnet still carries traffic:** bound devices disconnect, and a tailnet-authorized new device that connects over the tailnet stays pending. **tailscaled stopped:** a device configured by hand keeps syncing over the LAN, and no device is added or removed. |
+| An expelled device loses its connection in under a minute. | S2a, S2b, S2c | `headscale nodes delete`, `headscale nodes expire`, and separately a policy that removes the grant. Measure the time until the surviving peer reports the device disconnected. Timing starts at the control-plane action, so it also bounds the time our tailscaled takes to observe the change. |
+| An address is reused. | S3 | If Headscale hands the expelled node's address to a new node, the new node is added as a new device, and the expelled device stays disconnected. |
+| With tailscaled stopped, Syncthing keeps its known devices and accepts no new ones. | S4a | **LocalAPI cut, while the tailnet still carries traffic:** a proxy in front of the socket closes every LocalAPI connection, including the IPN stream and pooled HTTP connections, and refuses new ones. Bound devices disconnect, and a tailnet-authorized new device that connects over the tailnet stays pending. **tailscaled stopped:** a device configured by hand keeps syncing over the LAN, and no device is added or removed. |
 | Listen-only. | S5 | The LAN address refuses connections, the peer reaches the node over the tailnet, and with tailscaled stopped nothing listens. |
 | No improper access. | All | Every scenario checks that each node's folder list and connected devices contain exactly what the grants allow. |
 

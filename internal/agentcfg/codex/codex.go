@@ -20,6 +20,7 @@ const systemConfig = "/etc/codex/config.toml"
 type mcpServer struct {
 	URL               string            `toml:"url"`
 	Command           string            `toml:"command"`
+	Args              []string          `toml:"args"`
 	Enabled           *bool             `toml:"enabled"`
 	HTTPHeaders       map[string]string `toml:"http_headers"`
 	EnvHTTPHeaders    map[string]string `toml:"env_http_headers"`
@@ -118,26 +119,34 @@ func readConfig(path, scope string, inv *model.Inventory) error {
 	for name, entry := range cfg.MCPServers {
 		server := model.MCPServer{
 			Agent: model.Codex, Name: name, Scope: scope, Source: path,
-			URL: entry.URL, Command: entry.Command, Enabled: entry.Enabled == nil || *entry.Enabled,
+			URL: entry.URL, Command: entry.Command, Args: entry.Args, Enabled: entry.Enabled == nil || *entry.Enabled,
 		}
 		base := "mcp_servers." + name
+		// Each field carries the value the spec would write for it.
+		add := func(kind model.FieldKind, name, path, value string, literal bool, refs ...string) {
+			server.Fields = append(server.Fields, model.Field{Kind: kind, Name: name, Path: path, Literal: literal, EnvRefs: refs, Sum: model.ValueSum(value)})
+		}
 		for header, value := range entry.HTTPHeaders {
-			server.Fields = append(server.Fields, model.Field{Kind: model.HeaderField, Name: header, Path: base + ".http_headers." + header, Literal: value != ""})
+			add(model.HeaderField, header, base+".http_headers."+header, value, value != "")
 		}
 		for header, variable := range entry.EnvHTTPHeaders {
-			server.Fields = append(server.Fields, model.Field{Kind: model.HeaderField, Name: header, Path: base + ".env_http_headers." + header, EnvRefs: []string{variable}})
+			add(model.HeaderField, header, base+".env_http_headers."+header, "${"+variable+"}", false, variable)
 		}
 		if entry.BearerToken != "" {
-			server.Fields = append(server.Fields, model.Field{Kind: model.TokenField, Name: "Authorization", Path: base + ".bearer_token", Literal: true})
+			add(model.TokenField, "Authorization", base+".bearer_token", "Bearer "+entry.BearerToken, true)
 		}
 		if entry.BearerTokenEnvVar != "" {
-			server.Fields = append(server.Fields, model.Field{Kind: model.TokenField, Name: "Authorization", Path: base + ".bearer_token_env_var", EnvRefs: []string{entry.BearerTokenEnvVar}})
+			add(model.TokenField, "Authorization", base+".bearer_token_env_var", "Bearer ${"+entry.BearerTokenEnvVar+"}", false, entry.BearerTokenEnvVar)
 		}
 		for variable, value := range entry.Env {
-			server.Fields = append(server.Fields, model.Field{Kind: model.EnvField, Name: variable, Path: base + ".env." + variable, Literal: value != ""})
+			add(model.EnvField, variable, base+".env."+variable, value, value != "")
 		}
 		for _, variable := range entry.EnvVars {
-			server.Fields = append(server.Fields, model.Field{Kind: model.EnvField, Name: variable, Path: base + ".env_vars", EnvRefs: []string{variable}})
+			// Codex gives an explicit env value precedence over a passthrough.
+			if _, set := entry.Env[variable]; set {
+				continue
+			}
+			add(model.EnvField, variable, base+".env_vars", "${"+variable+"}", false, variable)
 		}
 		inv.MCPServers = append(inv.MCPServers, server)
 	}

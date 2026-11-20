@@ -5,6 +5,7 @@
 package model
 
 import (
+	"crypto/sha256"
 	"regexp"
 	"strings"
 )
@@ -42,7 +43,13 @@ type Field struct {
 	Path    string
 	Literal bool
 	EnvRefs []string
+	// Sum is the SHA-256 of the value as the spec would write it, such as
+	// "Bearer ${TOKEN}" for a Codex bearer_token_env_var, so it can be
+	// compared with the spec without being kept.
+	Sum [sha256.Size]byte
 }
+
+func ValueSum(value string) [sha256.Size]byte { return sha256.Sum256([]byte(value)) }
 
 type MCPServer struct {
 	Agent   Agent
@@ -51,6 +58,7 @@ type MCPServer struct {
 	Source  string
 	URL     string
 	Command string
+	Args    []string
 	Enabled bool
 	Fields  []Field
 }

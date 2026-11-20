@@ -121,9 +121,12 @@ var driftedFindings = []string{
 	"claude error literal-secret env.ANTHROPIC_AUTH_TOKEN",
 	"claude error literal-secret mcpServers.search.headers.X-API-Key",
 	"claude error literal-secret projects./home/user.mcpServers.deploy.headers.Authorization",
+	"claude error server-mismatch deploy",
+	"claude error server-mismatch search",
 	"claude error undeclared-hook SessionStart",
 	"claude error undeclared-server research",
 	"codex error literal-secret mcp_servers.search.http_headers.X-API-Key",
+	"codex error server-mismatch search",
 	"codex error server-mismatch search",
 	"codex error undeclared-hook PreToolUse",
 	"codex error undeclared-hook SessionStart",
@@ -169,6 +172,7 @@ claude = ["notify@example", "skills-only@example"]
 
 [mcp_servers."plugin:notify:events"]
 url = "https://events.example.com/mcp"
+headers = { Authorization = "Bearer ${EVENTS_TOKEN}" }
 agents = ["claude"]
 `)...)
 	if err := os.WriteFile(specPath, spec, 0o600); err != nil {
@@ -202,13 +206,19 @@ func TestHostLayerKeepsMachineSettingsWhileSharingBase(t *testing.T) {
 		t.Error("apply changed aimery's settings.json")
 	}
 
-	// The same machine without its host entry gets only the base: its own
-	// server and hook are drift, its permissions are still not touched.
-	assertFindings(t, findings(t, options(t, home, fleetSpec, "other")), []string{
-		"claude error undeclared-hook PreToolUse",
-		"claude error undeclared-server gpu",
-		"codex error undeclared-server registry",
-	})
+	// When the machine's names match no entry, for instance because tailscale
+	// did not answer, the base alone would remove its own server and hook.
+	unknown := options(t, home, fleetSpec, "other")
+	if _, err := agentcfg.Check(context.Background(), unknown); err == nil {
+		t.Error("check accepted a machine that matches no [hosts] entry")
+	}
+	if _, err := agentcfg.Apply(context.Background(), unknown); err == nil {
+		t.Error("apply accepted a machine that matches no [hosts] entry")
+	}
+	settingsAfter, _ = os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if string(settingsBefore) != string(settingsAfter) {
+		t.Error("apply changed the settings of a machine that matches no [hosts] entry")
+	}
 }
 
 func TestApplyCorrectsDriftAndKeepsAgentState(t *testing.T) {
@@ -250,6 +260,7 @@ func TestApplyCorrectsDriftAndKeepsAgentState(t *testing.T) {
 	assertFindings(t, findings(t, opts), []string{
 		"claude error literal-secret env.ANTHROPIC_AUTH_TOKEN",
 		"claude error literal-secret projects./home/user.mcpServers.deploy.headers.Authorization",
+		"claude error server-mismatch deploy",
 		"claude error undeclared-server research",
 		"claude warning shadowed-server deploy",
 		"claude warning unset-variable mcpServers.deploy.headers.Authorization",
@@ -421,4 +432,121 @@ func TestSecretsLiveNextToTheSpecALinkPointsTo(t *testing.T) {
 	if got, want := agentcfg.SecretsPath(link), filepath.Join(synced, "secrets.age"); got != want {
 		t.Errorf("SecretsPath = %s, want %s", got, want)
 	}
+}
+
+// TestApplyCorrectsServersWhereTheyAreAndKeepsTheirOptions changes a declared
+// URL while the server lives in ~/.mcp.json, as on a machine where that file
+// is linked to a synced one, and while its Codex table carries options the
+// spec does not describe.
+func TestApplyCorrectsServersWhereTheyAreAndKeepsTheirOptions(t *testing.T) {
+	setVariables(t, true)
+	home := copyHome(t, "clean")
+	specPath := filepath.Join(t.TempDir(), "spec.toml")
+	spec, _ := os.ReadFile(baseSpec)
+	spec = []byte(strings.Replace(string(spec), "https://search.example.com/mcp", "https://search.example.org/mcp", 1))
+	if err := os.WriteFile(specPath, spec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mcpJSON := `{ "mcpServers": {
+  "search": { "type": "http", "url": "https://search.example.com/mcp", "headers": { "X-API-Key": "${SEARCH_API_KEY}" }, "timeout": 30 },
+  "deploy": { "type": "http", "url": "https://deploy.example.ts.net/mcp", "headers": { "Authorization": "Bearer ${DEPLOY_TOKEN}" } },
+  "notes": { "type": "http", "url": "https://notes.example.com/mcp" },
+  "unapproved": { "type": "http", "url": "https://unapproved.example.com/mcp" }
+} }`
+	// Approving all servers does not override an explicit rejection.
+	settings := `{ "enableAllProjectMcpServers": true, "disabledMcpjsonServers": ["unapproved"] }`
+	codex := strings.Replace(codexText(t, home), "[mcp_servers.search]\n", "[mcp_servers.search]\n# kept by hand\nstartup_timeout_sec = 30\n", 1)
+	codex = strings.Replace(codex, `env_http_headers = { "X-API-Key" = "SEARCH_API_KEY" }`, `env_http_headers = { "X-API-Key" = "SEARCH_API_KEY" } # unchanged, so kept`, 1)
+	for path, content := range map[string]string{".mcp.json": mcpJSON, ".claude/settings.json": settings, ".codex/config.toml": codex} {
+		if err := os.WriteFile(filepath.Join(home, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := options(t, home, specPath, "casa")
+
+	if _, err := agentcfg.Apply(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	assertFindings(t, findings(t, opts), nil)
+
+	var file struct {
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+	data, _ := os.ReadFile(filepath.Join(home, ".mcp.json"))
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatal(err)
+	}
+	if got := file.MCPServers["search"]; got["url"] != "https://search.example.org/mcp" || got["timeout"] != float64(30) {
+		t.Errorf("search in ~/.mcp.json not corrected in place: %v", got)
+	}
+	if _, found := file.MCPServers["notes"]; found {
+		t.Error("undeclared approved server left in ~/.mcp.json")
+	}
+	if _, found := file.MCPServers["unapproved"]; !found {
+		t.Error("rejected server, which never loads, removed from ~/.mcp.json")
+	}
+	if state, _ := os.ReadFile(filepath.Join(home, ".claude.json")); strings.Contains(string(state), "search") {
+		t.Errorf("search duplicated in ~/.claude.json:\n%s", state)
+	}
+	if after := codexText(t, home); !strings.Contains(after, "# kept by hand\n") || !strings.Contains(after, "startup_timeout_sec = 30\n") || !strings.Contains(after, "# unchanged, so kept") {
+		t.Errorf("Codex server option or comment lost:\n%s", after)
+	}
+}
+
+func codexText(t *testing.T, home string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// TestReportsDoNotCarryCredentials puts a token in a hook command and in a URL
+// query, which reports name, and checks that neither reaches a report.
+func TestReportsDoNotCarryCredentials(t *testing.T) {
+	setVariables(t, true)
+	home := copyHome(t, "clean")
+	settings := `{
+  "enabledMcpjsonServers": ["search", "deploy"],
+  "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "curl -H 'Authorization: Bearer hook-secret-1234' https://hooks.example.com/stop?token=hook-secret-5678" },
+    { "type": "command", "command": "notify --token \"hook-secret-quoted\" && echo token api_key=hook-secret-after-prose" },
+    { "type": "command", "command": "sh -c 'curl --oauth2-bearer hook-secret-nested -d {\"api_key\":\"hook-secret-json\"} https://u:hook-secret-userinfo@h.example.com'" },
+    { "type": "command", "command": "notify --token '$hook-secret-dollar' --oauth2-bearer -hook-secret-dash -d '{\"model\":\"x\",\"api_key\":\"hook-secret-second\",\"u\":\"https://u:hook-secret-json-url@h.example.com/\"}' --password \\\nhook-secret-continued" },
+    { "type": "command", "command": "x --token \\$escaped_value --password Basic -d '{\"api_key\":\"a\\\"hook-secret-escaped-quote\"}' 'http://[::1]:80/x?a=1,hook-secret-comma&t=hook-secret-ipv6' --password=\"two hook-secret-words\"" },
+    { "type": "command", "command": "curl --header=\"Authorization: Bearer hook-secret-header\" -d '{\"kind\":\"x\",\"api_key\":\"abc\\\" hook-secret-after-space\"}' https://a.example/,https://u:hook-secret-list@b.example/" }] }] }
+}`
+	mcpJSON := strings.Replace(readFile(t, filepath.Join(home, ".mcp.json")), "https://search.example.com/mcp", "https://search.example.com/mcp?key=url-secret-1234", 1)
+	for path, content := range map[string]string{".claude/settings.json": settings, ".mcp.json": mcpJSON} {
+		if err := os.WriteFile(filepath.Join(home, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := options(t, home, baseSpec, "casa")
+	report, err := agentcfg.Check(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := agentcfg.Plan(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Findings) == 0 || len(plan.Files) == 0 {
+		t.Fatalf("expected drift to report: %+v %+v", report, plan)
+	}
+	for _, value := range []any{report, plan} {
+		text := string(mustJSON(value))
+		if strings.Contains(text, "secret-") || strings.Contains(text, "Basic") || strings.Contains(text, "escaped_value") {
+			t.Errorf("credential in report:\n%s", text)
+		}
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

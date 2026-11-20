@@ -62,6 +62,16 @@ func Write(path string, before, data []byte, backupDir string) (string, error) {
 // Atomic writes data to a temporary file next to path and renames it over
 // path, so readers see either the old or the new content.
 func Atomic(path string, data []byte, mode fs.FileMode) error {
+	return publish(path, data, mode, os.Rename)
+}
+
+// Create is Atomic for a file that must not exist yet: it fails with
+// fs.ErrExist, rather than replace it, if another writer created path first.
+func Create(path string, data []byte, mode fs.FileMode) error {
+	return publish(path, data, mode, os.Link)
+}
+
+func publish(path string, data []byte, mode fs.FileMode, place func(tmp, path string) error) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".agentcfg-*")
 	if err != nil {
 		return err
@@ -82,7 +92,7 @@ func Atomic(path string, data []byte, mode fs.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	return place(tmp.Name(), path)
 }
 
 // Prune keeps the newest keep entries of dir, whose names sort by age.

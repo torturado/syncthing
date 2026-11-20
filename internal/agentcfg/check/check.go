@@ -3,9 +3,11 @@ package check
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/torturado/agentcfg/internal/model"
 	"github.com/torturado/agentcfg/internal/spec"
@@ -52,10 +54,13 @@ func Run(desired spec.Spec, inv model.Inventory) []Finding {
 			}
 			for _, server := range found {
 				if want.URL != "" && server.URL != want.URL {
-					findings = append(findings, Finding{Error, agent, "server-mismatch", server.Source, server.Name, fmt.Sprintf("url is %q, spec says %q", server.URL, want.URL)})
+					findings = append(findings, Finding{Error, agent, "server-mismatch", server.Source, server.Name, fmt.Sprintf("url is %q, spec says %q", model.RedactURL(server.URL), model.RedactURL(want.URL))})
 				}
 				if want.Command != "" && server.Command != want.Command {
-					findings = append(findings, Finding{Error, agent, "server-mismatch", server.Source, server.Name, fmt.Sprintf("command is %q, spec says %q", server.Command, want.Command)})
+					findings = append(findings, Finding{Error, agent, "server-mismatch", server.Source, server.Name, fmt.Sprintf("command is %q, spec says %q", model.Redact(server.Command), model.Redact(want.Command))})
+				}
+				if differ := fieldsDiffer(want, server); len(differ) > 0 {
+					findings = append(findings, Finding{Error, agent, "server-mismatch", server.Source, server.Name, strings.Join(differ, ", ") + " differ from the spec"})
 				}
 			}
 		}
@@ -89,7 +94,7 @@ func Run(desired spec.Spec, inv model.Inventory) []Finding {
 
 	for _, hook := range inv.Hooks {
 		if !slices.Contains(desired.Hooks[hook.Agent], hook.Command) {
-			findings = append(findings, Finding{Error, hook.Agent, "undeclared-hook", hook.Source, hook.Event, hook.Command})
+			findings = append(findings, Finding{Error, hook.Agent, "undeclared-hook", hook.Source, hook.Event, model.Redact(hook.Command)})
 		}
 	}
 
@@ -122,4 +127,48 @@ func fieldFindings(agent model.Agent, source string, field model.Field, enabled 
 		}
 	}
 	return findings
+}
+
+// fieldsDiffer names the headers, variables and arguments of a configured
+// server that do not match the spec. Values are compared by digest and never
+// reported. Header names are compared without case, as HTTP does.
+func fieldsDiffer(want spec.Server, server model.MCPServer) []string {
+	type sums = map[string][32]byte
+	wantHeaders, wantEnv, haveHeaders, haveEnv := sums{}, sums{}, sums{}, sums{}
+	for name, value := range want.Headers {
+		wantHeaders[strings.ToLower(name)] = model.ValueSum(value)
+	}
+	for name, value := range want.Env {
+		wantEnv[name] = model.ValueSum(value)
+	}
+	for _, field := range server.Fields {
+		if field.Kind == model.EnvField {
+			haveEnv[field.Name] = field.Sum
+		} else {
+			haveHeaders[strings.ToLower(field.Name)] = field.Sum
+		}
+	}
+	var differ []string
+	compare := func(kind string, want, have sums) {
+		names := slices.Sorted(maps.Keys(want))
+		for name := range have {
+			if _, ok := want[name]; !ok {
+				names = append(names, name)
+			}
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			w, inSpec := want[name]
+			h, configured := have[name]
+			if !inSpec || !configured || w != h {
+				differ = append(differ, kind+" "+name)
+			}
+		}
+	}
+	compare("header", wantHeaders, haveHeaders)
+	compare("env", wantEnv, haveEnv)
+	if want.Command != "" && !slices.Equal(want.Args, server.Args) {
+		differ = append(differ, "args")
+	}
+	return differ
 }

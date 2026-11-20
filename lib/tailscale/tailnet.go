@@ -109,6 +109,7 @@ type Tailnet struct {
 }
 
 type peer struct {
+	name      string            // MagicDNS name without the tailnet domain
 	addrs     []netip.Addr      // tailnet addresses, IPv4 first; never modified
 	since     time.Time         // when the table first held the node with these addresses
 	deviceID  protocol.DeviceID // learned by probing; empty until then
@@ -280,21 +281,23 @@ func (t *Tailnet) refresh(ctx context.Context) error {
 	}
 	old := t.peers
 	t.peers = make(map[tailcfg.StableNodeID]*peer, len(peers))
-	for id, addrs := range peers {
-		if p, ok := old[id]; ok && slices.Equal(p.addrs, addrs) {
+	for id, fresh := range peers {
+		if p, ok := old[id]; ok && slices.Equal(p.addrs, fresh.addrs) {
+			p.name = fresh.name
 			t.peers[id] = p
 			continue
 		}
 		// New peer, or one whose addresses changed (possibly a reused
 		// address): learn its device ID again.
-		t.peers[id] = &peer{addrs: addrs, since: time.Now()}
+		fresh.since = time.Now()
+		t.peers[id] = fresh
 	}
 	return nil
 }
 
-// taggedPeers returns the addresses of the usable tagged peers, or an error
-// if tailscaled is in a state where peers cannot be trusted.
-func taggedPeers(st *ipnstate.Status) (map[tailcfg.StableNodeID][]netip.Addr, error) {
+// taggedPeers returns the names and addresses of the usable tagged peers, or
+// an error if tailscaled is in a state where peers cannot be trusted.
+func taggedPeers(st *ipnstate.Status) (map[tailcfg.StableNodeID]*peer, error) {
 	if st.BackendState != ipn.Running.String() {
 		return nil, fmt.Errorf("tailscale is not running (state %s)", st.BackendState)
 	}
@@ -305,7 +308,7 @@ func taggedPeers(st *ipnstate.Status) (map[tailcfg.StableNodeID][]netip.Addr, er
 		return nil, errors.New("tailscaled reported no node of its own")
 	}
 	domain := tailnetDomain(st.Self.DNSName)
-	peers := make(map[tailcfg.StableNodeID][]netip.Addr)
+	peers := make(map[tailcfg.StableNodeID]*peer)
 	for _, ps := range st.Peer {
 		// Nodes shared in from, or shared out to, another tailnet are named
 		// in that tailnet's domain.
@@ -317,7 +320,8 @@ func taggedPeers(st *ipnstate.Status) (map[tailcfg.StableNodeID][]netip.Addr, er
 		}
 		addrs := slices.Clone(ps.TailscaleIPs)
 		slices.SortFunc(addrs, netip.Addr.Compare)
-		peers[ps.ID] = addrs
+		name, _, _ := strings.Cut(ps.DNSName, ".")
+		peers[ps.ID] = &peer{name: name, addrs: addrs}
 	}
 	return peers, nil
 }
@@ -471,6 +475,25 @@ func (t *Tailnet) Devices() map[protocol.DeviceID][]string {
 		}
 	}
 	return devices
+}
+
+// A Node is a tagged peer of our tailnet.
+type Node struct {
+	ID    string
+	Name  string       // MagicDNS name without the tailnet domain
+	Addrs []netip.Addr // IPv4 first
+}
+
+// Nodes returns the tagged peers of our tailnet; the table is empty while
+// the tailnet is unavailable.
+func (t *Tailnet) Nodes() []Node {
+	t.mut.Lock()
+	defer t.mut.Unlock()
+	nodes := make([]Node, 0, len(t.peers))
+	for id, p := range t.peers {
+		nodes = append(nodes, Node{ID: string(id), Name: p.name, Addrs: slices.Clone(p.addrs)})
+	}
+	return nodes
 }
 
 func (t *Tailnet) bepAddresses(p *peer) []string {

@@ -43,10 +43,7 @@ type hooksFile struct {
 func Inventory(home string) (model.Inventory, error) {
 	var inv model.Inventory
 
-	codexHome := filepath.Join(home, ".codex")
-	if dir := os.Getenv("CODEX_HOME"); dir != "" {
-		codexHome = dir
-	}
+	codexHome := codexHome(home)
 
 	for _, entry := range []struct{ path, scope string }{
 		{filepath.Join(codexHome, "config.toml"), "user"},
@@ -72,6 +69,18 @@ func Inventory(home string) (model.Inventory, error) {
 	}
 
 	return inv, nil
+}
+
+func codexHome(home string) string {
+	if dir := os.Getenv("CODEX_HOME"); dir != "" {
+		return dir
+	}
+	return filepath.Join(home, ".codex")
+}
+
+// WatchPaths are the files whose changes can change the inventory.
+func WatchPaths(home string) []string {
+	return []string{filepath.Join(codexHome(home), "config.toml"), filepath.Join(codexHome(home), "hooks.json")}
 }
 
 func readConfig(path, scope string, inv *model.Inventory) error {

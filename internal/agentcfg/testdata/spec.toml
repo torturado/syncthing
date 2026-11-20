@@ -1,7 +1,9 @@
 [mcp_servers.search]
 url = "https://search.example.com/mcp"
+headers = { "X-API-Key" = "${SEARCH_API_KEY}" }
 
 [mcp_servers.deploy]
 url = "https://deploy.example.ts.net/mcp"
+headers = { Authorization = "Bearer ${DEPLOY_TOKEN}" }
 
 [hooks]

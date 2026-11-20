@@ -25,6 +25,7 @@ import (
 
 	"github.com/syncthing/syncthing/internal/db"
 	"github.com/syncthing/syncthing/internal/slogutil"
+	"github.com/syncthing/syncthing/lib/agentcfg"
 	"github.com/syncthing/syncthing/lib/api"
 	"github.com/syncthing/syncthing/lib/build"
 	"github.com/syncthing/syncthing/lib/config"
@@ -286,6 +287,9 @@ func (a *App) startup() error {
 	a.mainService.Add(discoveryManager)
 	a.mainService.Add(connectionsService)
 
+	agentcfgService := agentcfg.New(a.cfg, a.evLogger, tailnet)
+	a.mainService.Add(agentcfgService)
+
 	a.cfg.Modify(func(cfg *config.Configuration) {
 		// Candidate builds always run with usage reporting.
 		if build.IsCandidate {
@@ -302,7 +306,7 @@ func (a *App) startup() error {
 
 	// GUI
 
-	if err := a.setupGUI(m, defaultSub, diskSub, discoveryManager, connectionsService, usageReportingSvc, slogutil.ErrorRecorder, slogutil.GlobalRecorder, miscDB); err != nil {
+	if err := a.setupGUI(m, defaultSub, diskSub, discoveryManager, connectionsService, usageReportingSvc, slogutil.ErrorRecorder, slogutil.GlobalRecorder, miscDB, agentcfgService); err != nil {
 		slog.Error("Failed to start API", slogutil.Error(err))
 		return err
 	}
@@ -404,7 +408,7 @@ func (a *App) stopWithErr(stopReason svcutil.ExitStatus, err error) svcutil.Exit
 	return a.exitStatus
 }
 
-func (a *App) setupGUI(m model.Model, defaultSub, diskSub events.BufferedSubscription, discoverer discover.Manager, connectionsService connections.Service, urService *ur.Service, errors, systemLog slogutil.Recorder, miscDB *db.Typed) error {
+func (a *App) setupGUI(m model.Model, defaultSub, diskSub events.BufferedSubscription, discoverer discover.Manager, connectionsService connections.Service, urService *ur.Service, errors, systemLog slogutil.Recorder, miscDB *db.Typed, agentcfgService *agentcfg.Service) error {
 	guiCfg := a.cfg.GUI()
 
 	if !guiCfg.Enabled {
@@ -418,7 +422,7 @@ func (a *App) setupGUI(m model.Model, defaultSub, diskSub events.BufferedSubscri
 	summaryService := model.NewFolderSummaryService(a.cfg, m, a.myID, a.evLogger)
 	a.mainService.Add(summaryService)
 
-	apiSvc := api.New(a.myID, a.cfg, locations.Get(locations.GUIAssets), tlsDefaultCommonName, m, defaultSub, diskSub, a.evLogger, discoverer, connectionsService, urService, summaryService, errors, systemLog, a.opts.NoUpgrade, miscDB)
+	apiSvc := api.New(a.myID, a.cfg, locations.Get(locations.GUIAssets), tlsDefaultCommonName, m, defaultSub, diskSub, a.evLogger, discoverer, connectionsService, urService, summaryService, errors, systemLog, a.opts.NoUpgrade, miscDB, agentcfgService)
 	a.mainService.Add(apiSvc)
 
 	if err := apiSvc.WaitForStart(); err != nil {

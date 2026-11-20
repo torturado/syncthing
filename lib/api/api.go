@@ -94,6 +94,7 @@ type service struct {
 	exitChan             chan *svcutil.FatalErr
 	miscDB               *db.Typed
 	shutdownTimeout      time.Duration
+	agentcfg             http.Handler // the /rest/agentcfg endpoints; nil without them
 
 	guiErrors slogutil.Recorder
 	systemLog slogutil.Recorder
@@ -107,7 +108,7 @@ type Service interface {
 	WaitForStart() error
 }
 
-func New(id protocol.DeviceID, cfg config.Wrapper, assetDir, tlsDefaultCommonName string, m model.Model, defaultSub, diskSub events.BufferedSubscription, evLogger events.Logger, discoverer discover.Manager, connectionsService connections.Service, urService *ur.Service, fss model.FolderSummaryService, errors, systemLog slogutil.Recorder, noUpgrade bool, miscDB *db.Typed) Service {
+func New(id protocol.DeviceID, cfg config.Wrapper, assetDir, tlsDefaultCommonName string, m model.Model, defaultSub, diskSub events.BufferedSubscription, evLogger events.Logger, discoverer discover.Manager, connectionsService connections.Service, urService *ur.Service, fss model.FolderSummaryService, errors, systemLog slogutil.Recorder, noUpgrade bool, miscDB *db.Typed, agentcfg http.Handler) Service {
 	return &service{
 		id:      id,
 		cfg:     cfg,
@@ -131,6 +132,7 @@ func New(id protocol.DeviceID, cfg config.Wrapper, assetDir, tlsDefaultCommonNam
 		exitChan:             make(chan *svcutil.FatalErr, 1),
 		miscDB:               miscDB,
 		shutdownTimeout:      100 * time.Millisecond,
+		agentcfg:             agentcfg,
 	}
 }
 
@@ -340,6 +342,12 @@ func (s *service) Serve(ctx context.Context) error {
 	debugMux.HandleFunc("/rest/debug/support", s.getSupportBundle)
 	debugMux.HandleFunc("/rest/debug/file", s.getDebugFile)
 	restMux.Handler(http.MethodGet, "/rest/debug/*method", debugMux)
+
+	if s.agentcfg != nil {
+		restMux.Handler(http.MethodGet, "/rest/agentcfg/report", s.agentcfg)
+		restMux.Handler(http.MethodGet, "/rest/agentcfg/fleet", s.agentcfg)
+		restMux.Handler(http.MethodPost, "/rest/agentcfg/apply", s.agentcfg) // [dryrun]
+	}
 
 	// A handler that disables caching
 	noCacheRestMux := noCacheMiddleware(restMux)

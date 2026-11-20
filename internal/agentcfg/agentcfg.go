@@ -301,7 +301,11 @@ func applyReport(opts Options, desired spec.Spec, edits []model.FileEdit, writte
 		Written: written && len(edits) > 0, Files: []FileChange{},
 	}
 	for _, edit := range edits {
-		report.Files = append(report.Files, FileChange{Path: edit.Path, Changes: edit.Changes})
+		changes := make([]string, len(edit.Changes))
+		for i, change := range edit.Changes {
+			changes[i] = model.Redact(change)
+		}
+		report.Files = append(report.Files, FileChange{Path: edit.Path, Changes: changes})
 	}
 	return report
 }

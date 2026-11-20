@@ -30,6 +30,7 @@ type mcpServer struct {
 	Type    string            `json:"type"`
 	URL     string            `json:"url"`
 	Command string            `json:"command"`
+	Args    []string          `json:"args"`
 	Headers map[string]string `json:"headers"`
 	Env     map[string]string `json:"env"`
 }
@@ -38,6 +39,7 @@ type settings struct {
 	Env                        map[string]string          `json:"env"`
 	Hooks                      model.HookGroups           `json:"hooks"`
 	EnabledMcpjsonServers      []string                   `json:"enabledMcpjsonServers"`
+	DisabledMcpjsonServers     []string                   `json:"disabledMcpjsonServers"`
 	EnableAllProjectMcpServers bool                       `json:"enableAllProjectMcpServers"`
 	EnabledPlugins             map[string]json.RawMessage `json:"enabledPlugins"`
 }
@@ -106,7 +108,7 @@ func Inventory(home string) (model.Inventory, error) {
 	dropIns, _ := filepath.Glob(filepath.Join(managedDir, "managed-settings.d", "*.json"))
 	settingsPaths = append(settingsPaths, dropIns...)
 
-	var approved []string
+	var approved, rejected []string
 	approveAll := false
 	// Later files take precedence, so managed settings can turn a plugin off.
 	enabledPlugins := map[string]string{}
@@ -127,6 +129,7 @@ func Inventory(home string) (model.Inventory, error) {
 			})
 		}
 		approved = append(approved, s.EnabledMcpjsonServers...)
+		rejected = append(rejected, s.DisabledMcpjsonServers...)
 		approveAll = approveAll || s.EnableAllProjectMcpServers
 		for name, value := range s.EnabledPlugins {
 			if string(value) == "true" {
@@ -164,8 +167,11 @@ func Inventory(home string) (model.Inventory, error) {
 			inv.MCPServers = append(inv.MCPServers, servers(file.MCPServers, "managed", path, "mcpServers", nil)...)
 			continue
 		}
-		// A .mcp.json server only loads once approved in settings.
-		enabled := func(name string) bool { return approveAll || slices.Contains(approved, name) }
+		// A .mcp.json server only loads once approved in settings, and an
+		// explicit rejection wins over approving all of them.
+		enabled := func(name string) bool {
+			return !slices.Contains(rejected, name) && (approveAll || slices.Contains(approved, name))
+		}
 		inv.MCPServers = append(inv.MCPServers, servers(file.MCPServers, "project ~", path, "mcpServers", enabled)...)
 	}
 
@@ -311,7 +317,7 @@ func servers(entries map[string]mcpServer, scope, source, prefix string, enabled
 	for name, entry := range entries {
 		server := model.MCPServer{
 			Agent: model.Claude, Name: name, Scope: scope, Source: source,
-			URL: entry.URL, Command: entry.Command, Enabled: enabled == nil || enabled(name),
+			URL: entry.URL, Command: entry.Command, Args: entry.Args, Enabled: enabled == nil || enabled(name),
 		}
 		base := prefix + "." + name
 		for header, value := range entry.Headers {
@@ -328,7 +334,7 @@ func servers(entries map[string]mcpServer, scope, source, prefix string, enabled
 // field classifies a value without keeping it: a value with no ${VAR}
 // reference is written in the file.
 func field(kind model.FieldKind, name, path, value string) model.Field {
-	f := model.Field{Kind: kind, Name: name, Path: path}
+	f := model.Field{Kind: kind, Name: name, Path: path, Sum: model.ValueSum(value)}
 	matches := model.EnvRef.FindAllStringSubmatch(value, -1)
 	for _, match := range matches {
 		if !slices.Contains(pluginVariables, match[1]) {

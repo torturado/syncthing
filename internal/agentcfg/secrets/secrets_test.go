@@ -1,6 +1,8 @@
 package secrets_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,8 +28,12 @@ func TestEveryRecipientDecryptsAndShellsReadTheEnvironmentFile(t *testing.T) {
 
 	secretsPath := filepath.Join(dir, "secrets.age")
 	want := secrets.Values{"DEPLOY_TOKEN": "tok_a;b&c|d>e#f", "SEARCH_API_KEY": "key-123"}
-	if err := secrets.Save(secretsPath, want, recipients); err != nil {
+	if err := secrets.Save(secretsPath, want, recipients, true); err != nil {
 		t.Fatal(err)
+	}
+	// Another machine's copy can arrive while a first secret is being created.
+	if err := secrets.Save(secretsPath, secrets.Values{"OTHER": "x"}, recipients, true); !errors.Is(err, fs.ErrExist) {
+		t.Errorf("creating over an existing secrets file: %v", err)
 	}
 	encrypted, _ := os.ReadFile(secretsPath)
 	if string(encrypted) == string(want.Format()) {
@@ -69,5 +75,18 @@ func TestValuesThatShellsAndSystemdWouldReadDifferentlyAreRejected(t *testing.T)
 		if err := secrets.ValidateValue("NAME", value); err == nil {
 			t.Errorf("%q accepted", value)
 		}
+	}
+}
+
+// A machine the synced file has not reached yet must not read it as empty:
+// sync would erase its environment and set would replace the fleet's secrets.
+func TestMissingSecretsFileIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	identity := filepath.Join(dir, "identity.txt")
+	if _, err := secrets.Keygen(identity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secrets.Load(filepath.Join(dir, "secrets.age"), identity); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing secrets file loaded with error %v", err)
 	}
 }

@@ -86,14 +86,14 @@ func planConfig(path string, desired spec.Spec, allowed func(string) bool) (*mod
 	text := string(before)
 
 	current, _ := doc["mcp_servers"].(map[string]any)
-	if serverChanges, rewrite := diffServers(current, want); len(serverChanges) > 0 {
+	if serverChanges, replace, update := diffServers(current, want); len(serverChanges) > 0 {
 		changes = append(changes, serverChanges...)
 		var replacement strings.Builder
 		expectedServers := maps.Clone(current)
 		if expectedServers == nil {
 			expectedServers = map[string]any{}
 		}
-		for _, name := range rewrite {
+		for _, name := range replace {
 			delete(expectedServers, name)
 			if server, declared := want[name]; declared {
 				if replacement.Len() > 0 {
@@ -104,8 +104,35 @@ func planConfig(path string, desired spec.Spec, allowed func(string) bool) (*mod
 			}
 		}
 		text = replaceTables(text, func(key []string) bool {
-			return len(key) > 1 && key[0] == "mcp_servers" && slices.Contains(rewrite, key[1])
+			return len(key) > 1 && key[0] == "mcp_servers" && slices.Contains(replace, key[1])
 		}, replacement.String())
+		for _, name := range update {
+			existing, wanted := current[name].(map[string]any), want[name].decoded.(map[string]any)
+			// An owned key that already has the spec's value keeps its line,
+			// and the comment on it.
+			unchanged := func(key string) bool {
+				value, found := existing[key]
+				return found && reflect.DeepEqual(value, wanted[key])
+			}
+			text = replaceTables(text, func(key []string) bool {
+				return len(key) == 3 && key[0] == "mcp_servers" && key[1] == name && slices.Contains(ownedKeys, key[2]) && !unchanged(key[2])
+			}, "")
+			var lines strings.Builder
+			for _, line := range strings.SplitAfter(want[name].lines, "\n") {
+				if key, _, _ := strings.Cut(line, " = "); line != "" && !unchanged(key) {
+					lines.WriteString(line)
+				}
+			}
+			text = updateTable(text, name, lines.String(), unchanged)
+			merged := map[string]any{}
+			for key, value := range existing {
+				if !slices.Contains(ownedKeys, key) {
+					merged[key] = value
+				}
+			}
+			maps.Copy(merged, want[name].decoded.(map[string]any))
+			expectedServers[name] = merged
+		}
 		setOrDelete(expected, "mcp_servers", expectedServers)
 	}
 
@@ -161,8 +188,13 @@ func planConfig(path string, desired spec.Spec, allowed func(string) bool) (*mod
 
 type renderedServer struct {
 	decoded any
-	text    string
+	// text is the whole table; lines are its keys without the header.
+	text, lines string
 }
+
+// ownedKeys are the keys of a server table that the spec describes. Others,
+// such as startup_timeout_sec or enabled_tools, are kept on update.
+var ownedKeys = []string{"url", "http_headers", "env_http_headers", "bearer_token", "bearer_token_env_var", "command", "args", "env", "env_vars"}
 
 // renderServers returns the Codex servers declared for this machine as TOML
 // tables, and decoded for comparison with the file.
@@ -176,21 +208,21 @@ func renderServers(desired spec.Spec) (map[string]renderedServer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("mcp_servers.%s: %w", name, err)
 		}
-		text := serverTable(name, rendered)
+		lines := serverLines(rendered)
+		text := "[mcp_servers." + tomlKey(name) + "]\n" + lines
 		var decoded map[string]any
 		if _, err := toml.Decode(text, &decoded); err != nil {
 			return nil, err
 		}
-		servers[name] = renderedServer{decoded["mcp_servers"].(map[string]any)[name], text}
+		servers[name] = renderedServer{decoded["mcp_servers"].(map[string]any)[name], text, lines}
 	}
 	return servers, nil
 }
 
-// serverTable renders one server the way the Codex documentation writes it,
-// with headers and environment as inline tables.
-func serverTable(name string, c spec.CodexMCPServer) string {
+// serverLines renders the keys of one server the way the Codex documentation
+// writes them, with headers and environment as inline tables.
+func serverLines(c spec.CodexMCPServer) string {
 	var b strings.Builder
-	b.WriteString("[mcp_servers." + tomlKey(name) + "]\n")
 	line := func(key, value string) {
 		b.WriteString(key + " = " + value + "\n")
 	}
@@ -257,10 +289,10 @@ func tomlString(s string) string {
 }
 
 // diffServers describes the changes and names the servers whose tables must
-// be rewritten. A server that is not declared but disabled is left alone, as
-// check does.
-func diffServers(current map[string]any, want map[string]renderedServer) ([]string, []string) {
-	var changes, rewrite []string
+// be replaced, because they are removed or added, and those whose owned keys
+// must be updated. A server that is not declared but disabled is left alone,
+// as check does.
+func diffServers(current map[string]any, want map[string]renderedServer) (changes, replace, update []string) {
 	for _, name := range slices.Sorted(maps.Keys(current)) {
 		if _, declared := want[name]; declared {
 			continue
@@ -269,21 +301,107 @@ func diffServers(current map[string]any, want map[string]renderedServer) ([]stri
 			continue
 		}
 		changes = append(changes, "remove MCP server "+name)
-		rewrite = append(rewrite, name)
+		replace = append(replace, name)
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
-		existing, found := current[name]
+		existing, found := current[name].(map[string]any)
 		switch {
 		case !found:
 			changes = append(changes, "add MCP server "+name)
-		case !reflect.DeepEqual(existing, want[name].decoded):
+			replace = append(replace, name)
+		case !reflect.DeepEqual(owned(existing), want[name].decoded):
 			changes = append(changes, "update MCP server "+name)
-		default:
+			update = append(update, name)
+		}
+	}
+	return changes, replace, update
+}
+
+func owned(entry map[string]any) map[string]any {
+	kept := map[string]any{}
+	for key, value := range entry {
+		if slices.Contains(ownedKeys, key) {
+			kept[key] = value
+		}
+	}
+	return kept
+}
+
+var keyLine = regexp.MustCompile(`^\s*("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)\s*[.=]`)
+
+// updateTable puts lines right after the [mcp_servers.<name>] header and
+// drops the owned keys the table had, including values that span lines,
+// except those keep accepts. Its other keys and its comments stay where they
+// are.
+func updateTable(text, name, lines string, keep func(key string) bool) string {
+	var out []string
+	inTable := false
+	// dropping and keeping count the brackets still open in a multi-line
+	// value being dropped or kept.
+	dropping, keeping := 0, 0
+	for _, line := range strings.SplitAfter(text, "\n") {
+		if line == "" {
 			continue
 		}
-		rewrite = append(rewrite, name)
+		if dropping > 0 {
+			dropping += bracketDepth(line)
+			continue
+		}
+		if keeping > 0 {
+			keeping += bracketDepth(line)
+			out = append(out, line)
+			continue
+		}
+		if m := tableHeader.FindStringSubmatch(line); m != nil {
+			key := splitKey(m[1])
+			inTable = len(key) == 2 && key[0] == "mcp_servers" && key[1] == name
+			out = append(out, line)
+			if inTable {
+				out = append(out, lines)
+			}
+			continue
+		}
+		if m := keyLine.FindStringSubmatch(line); inTable && m != nil && slices.Contains(ownedKeys, splitKey(m[1])[0]) {
+			if keep(splitKey(m[1])[0]) {
+				keeping = max(bracketDepth(line), 0)
+				out = append(out, line)
+			} else {
+				dropping = max(bracketDepth(line), 0)
+			}
+			continue
+		}
+		out = append(out, line)
 	}
-	return changes, rewrite
+	return strings.Join(out, "")
+}
+
+// bracketDepth counts the [ a line opens minus the ] it closes, outside
+// strings and comments.
+func bracketDepth(line string) int {
+	depth := 0
+	var quote rune
+	escaped := false
+	for _, r := range line {
+		switch {
+		case escaped:
+			escaped = false
+		case quote == '"' && r == '\\':
+			escaped = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '"' || r == '\'':
+			quote = r
+		case r == '#':
+			return depth
+		case r == '[':
+			depth++
+		case r == ']':
+			depth--
+		}
+	}
+	return depth
 }
 
 // filterEvent drops the handlers of one inline hook event that are not
@@ -445,11 +563,13 @@ func setOrDelete(m map[string]any, key string, value any) {
 	}
 }
 
-// normalize makes decoded documents comparable: empty tables equal missing
-// ones, and every value has the type a JSON round trip gives it.
+// normalize makes decoded documents comparable: an empty mcp_servers or
+// hooks table equals a missing one, and every value has the type a JSON round
+// trip gives it. Other empty tables still count, so a rewrite that swallows
+// one is caught.
 func normalize(doc map[string]any) any {
-	for key, value := range doc {
-		if v, ok := value.(map[string]any); ok && len(v) == 0 {
+	for _, key := range []string{"mcp_servers", "hooks"} {
+		if v, ok := doc[key].(map[string]any); ok && len(v) == 0 {
 			delete(doc, key)
 		}
 	}

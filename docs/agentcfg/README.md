@@ -43,7 +43,9 @@ when a field is removed or changes meaning; fields may be added.
 The top level is the base every machine shares. `[roles.*]` and the `[hosts.*]` entry that
 matches this machine add to it, in that order: a server replaces one with the same name, and
 hooks and plugins accumulate. A host matches by hostname (with or without domain) or tailnet
-name, so unifying the fleet does not erase what one machine needs on its own.
+name, so unifying the fleet does not erase what one machine needs on its own. Once the spec has
+`[hosts]` entries, a machine that matches none is refused instead of checked against the base
+alone, which would make `apply` remove what that machine adds.
 
 ```toml
 [mcp_servers.search]
@@ -83,7 +85,7 @@ hooks keep `${CLAUDE_PLUGIN_ROOT}` unexpanded, so the same name works on every m
 | Rule | Severity | Meaning |
 |---|---|---|
 | `missing-server` | error | A declared server is not configured or not enabled. |
-| `server-mismatch` | error | A declared server points at a different URL or command. |
+| `server-mismatch` | error | A declared server points at a different URL or command, or its headers, environment or arguments differ from the spec. |
 | `undeclared-server` | error | An enabled server is not in the spec, in any scope, including one a plugin brings. |
 | `undeclared-hook` | error | A hook is not in the spec, such as one reinstalled by another tool or carried by a plugin. |
 | `undeclared-plugin` | error | A Claude Code plugin is enabled machine-wide but not in the spec. |
@@ -93,7 +95,10 @@ hooks keep `${CLAUDE_PLUGIN_ROOT}` unexpanded, so the same name works on every m
 | `unset-variable` | warning | A referenced variable is not set where the check ran, so the server may start unauthenticated. |
 
 Secret values are never read into the report: a field only records whether it is written in
-the file and which variables it references.
+the file, which variables it references and a digest to compare it with the spec. URLs and hook
+commands are reported with what may be a credential replaced by `REDACTED`: user information,
+query values, the value after a credential name (`Authorization: …`, `api_key=…`,
+`--token …`) and Bearer or Basic tokens.
 
 ## What `apply` writes
 
@@ -102,13 +107,17 @@ the file and which variables it references.
 | File | Owned |
 |---|---|
 | `~/.claude.json` | `mcpServers` (the user scope). Never `projects`. |
+| `~/.mcp.json` | `mcpServers` approved in settings: declared ones are corrected there, undeclared ones removed. Unapproved entries, which never load, are kept. |
 | `~/.claude/settings.json` | Hooks not in the spec are removed. Permissions, env and the rest are kept. |
 | `~/.codex/config.toml` | The `mcp_servers` tables it changes, and inline hook events. Never `projects` or the `hooks.state` trust store. Comments and other tables are kept. |
 | `~/.codex/hooks.json` | Hooks not in the spec are removed. |
 
-A declared server already enabled with the same target in `~/.mcp.json` or managed settings is
-left there instead of being duplicated in `~/.claude.json`. An undeclared Codex server with
-`enabled = false` is left alone, as `check` does. Hooks are only removed, never added, because
+A declared server enabled in `~/.mcp.json` is corrected there, and one enabled with the same
+target in managed settings is left there; neither is added to `~/.claude.json`, though an entry
+already there is corrected too, since the user scope also applies outside the home directory. Within a
+server, only the keys the spec describes are written (URL, command, arguments, headers,
+environment), so options such as a Codex `startup_timeout_sec`, and comments in its table, are
+kept. An undeclared Codex server with `enabled = false` is left alone, as `check` does. Hooks are only removed, never added, because
 the spec lists the hooks allowed, not where they go. Plugins and managed files are reported but
 never changed.
 
@@ -128,6 +137,7 @@ folder.
 ```sh
 agentcfg secrets keygen                 # once per machine; prints its age_recipient
 agentcfg secrets set COOLIFY_TOKEN      # value read from stdin; re-encrypts to every host
+                                        # (--create for the fleet's first secret)
 agentcfg secrets unset COOLIFY_TOKEN
 agentcfg secrets rekey                  # after adding or removing a host's age_recipient
 agentcfg secrets sync                   # decrypts into ~/.config/environment.d/agentcfg.conf
@@ -144,16 +154,20 @@ set -a; . ~/.config/environment.d/agentcfg.conf; set +a
 To keep both readers in agreement, a value may not contain whitespace, quotes, `$`, a backslash
 or a backtick.
 
+A missing `secrets.age` is an error for every subcommand, so a machine the synced file has not
+reached yet neither empties its environment file nor, with `set`, replaces the fleet's secrets
+with a new file. Only `set --create` starts a new one.
+
 ### Moving an existing machine to references
 
 1. `agentcfg secrets keygen`, add the printed `age_recipient` to the machine's `[hosts]` entry,
    then `agentcfg secrets rekey` from a machine that can already decrypt.
-2. `agentcfg secrets set NAME` for each credential, then `agentcfg secrets sync` on every
-   machine.
+2. `agentcfg secrets set NAME` for each credential (with `--create` for the first one, when the
+   fleet has no `secrets.age` yet), then `agentcfg secrets sync` on every machine.
 3. Add the `headers` or `env` references to the spec's servers. Without them, `apply` would
    write the servers without credentials.
-4. Remove the literal entries from files `apply` does not own (`~/.mcp.json`, the `env` of
-   `settings.json`), then `agentcfg apply --write` and `agentcfg check`. Claude Code does not
+4. Remove the literal entries from what `apply` does not own (the `env` of `settings.json`,
+   servers in local project scopes), then `agentcfg apply --write` and `agentcfg check`. Claude Code does not
    expand `${VAR}` in settings `env`: drop the key and let the agent inherit the variable, or,
    for the API credential, use `apiKeyHelper`, for example
    `"apiKeyHelper": "printf %s \"$PROXY_TOKEN\""`.

@@ -103,7 +103,8 @@ func Load(path string) (File, error) {
 
 // Resolve merges the base, the roles of the matching host and the host itself.
 // names are the machine's hostname and tailnet names; at most one [hosts]
-// entry may match them.
+// entry may match them. When the spec declares hosts, exactly one must match:
+// the base alone would make apply remove what that machine adds.
 func (f File) Resolve(names []string) (Spec, error) {
 	var matched []string
 	for key := range f.Hosts {
@@ -114,6 +115,9 @@ func (f File) Resolve(names []string) (Spec, error) {
 	slices.Sort(matched)
 	if len(matched) > 1 {
 		return Spec{}, fmt.Errorf("hosts %v all match this machine (%v)", matched, names)
+	}
+	if len(f.Hosts) > 0 && len(matched) == 0 {
+		return Spec{}, fmt.Errorf("no [hosts] entry matches this machine (%v); add one, or select it with --host", names)
 	}
 
 	s := Spec{MCPServers: map[string]Server{}, Hooks: map[model.Agent][]string{}, Plugins: map[model.Agent][]string{}}
@@ -235,12 +239,12 @@ func CodexServer(s Server) (CodexMCPServer, error) {
 		switch {
 		case len(refs) == 0:
 			c.HTTPHeaders = setKey(c.HTTPHeaders, header, value)
-		case len(refs) == 1 && refs[0][0] == value:
+		case len(refs) == 1 && value == "${"+refs[0][1]+"}":
 			c.EnvHTTPHeaders = setKey(c.EnvHTTPHeaders, header, refs[0][1])
-		case len(refs) == 1 && strings.EqualFold(header, "Authorization") && value == "Bearer "+refs[0][0]:
+		case len(refs) == 1 && strings.EqualFold(header, "Authorization") && value == "Bearer ${"+refs[0][1]+"}":
 			c.BearerTokenEnvVar = refs[0][1]
 		default:
-			return c, fmt.Errorf("header %s: Codex only supports a value that is exactly ${VAR}, or \"Bearer ${VAR}\" for Authorization", header)
+			return c, fmt.Errorf("header %s: Codex only supports a value that is exactly ${VAR}, or \"Bearer ${VAR}\" for Authorization, without a :- default", header)
 		}
 	}
 	for _, variable := range slices.Sorted(maps.Keys(s.Env)) {

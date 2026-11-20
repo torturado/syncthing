@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -38,7 +39,7 @@ const usage = `usage:
   agentcfg check   [--spec path] [--host name] [--json]
   agentcfg apply   [--spec path] [--host name] [--json] [--write]
   agentcfg secrets keygen [--identity path]
-  agentcfg secrets set NAME [--spec path] [--identity path]   (value read from stdin)
+  agentcfg secrets set NAME [--spec path] [--identity path] [--create]   (value read from stdin)
   agentcfg secrets unset NAME [--spec path] [--identity path]
   agentcfg secrets rekey [--spec path] [--identity path]
   agentcfg secrets sync [--spec path] [--identity path] [--out path]`
@@ -198,6 +199,7 @@ func runSecrets(args []string, home string, stdin io.Reader, stdout io.Writer) (
 	}
 	f := newFlags("secrets "+command, home)
 	out := f.set.String("out", filepath.Join(xdgConfig(home), "environment.d", "agentcfg.conf"), "environment file written by sync")
+	create := f.set.Bool("create", false, "set: create the secrets file when it does not exist yet")
 	if err := f.set.Parse(args); err != nil {
 		return 0, err
 	}
@@ -234,19 +236,37 @@ func runSecrets(args []string, home string, stdin io.Reader, stdout io.Writer) (
 		if err != nil {
 			return 0, fmt.Errorf("spec: %w", err)
 		}
-		values, err := secrets.Load(secretsPath, *f.identity)
-		if err != nil {
-			return 0, err
-		}
-		switch command {
-		case "set":
-			value, err := readValue(stdin)
-			if err != nil {
+		// The value is read first, so the file is loaded, or found missing,
+		// just before it is written.
+		var value string
+		if command == "set" {
+			if value, err = readValue(stdin); err != nil {
 				return 0, err
 			}
 			if err := secrets.ValidateValue(name, value); err != nil {
 				return 0, err
 			}
+		}
+		_, statErr := os.Stat(secretsPath)
+		missing := errors.Is(statErr, fs.ErrNotExist)
+		if statErr != nil && !missing {
+			return 0, statErr
+		}
+		var values secrets.Values
+		switch {
+		case missing && command == "set" && *create:
+			values = secrets.Values{}
+		case missing:
+			return 0, fmt.Errorf("%s does not exist; wait for it to sync, or pass --create to set for the fleet's first secret", shorten(secretsPath, home))
+		case command == "set" && *create:
+			return 0, fmt.Errorf("%s already exists; set without --create", shorten(secretsPath, home))
+		default:
+			if values, err = secrets.Load(secretsPath, *f.identity); err != nil {
+				return 0, err
+			}
+		}
+		switch command {
+		case "set":
 			values[name] = value
 		case "unset":
 			if _, ok := values[name]; !ok {
@@ -255,7 +275,7 @@ func runSecrets(args []string, home string, stdin io.Reader, stdout io.Writer) (
 			delete(values, name)
 		}
 		recipients := file.Recipients()
-		if err := secrets.Save(secretsPath, values, recipients); err != nil {
+		if err := secrets.Save(secretsPath, values, recipients, missing); err != nil {
 			return 0, err
 		}
 		fmt.Fprintf(stdout, "%s encrypted to %d machines. Run agentcfg secrets sync on each one.\n", shorten(secretsPath, home), len(recipients))

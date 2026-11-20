@@ -1,0 +1,123 @@
+<modal id="agentcfg" status="{{agentcfgState(agentcfg.status) == 'ok' ? 'default' : 'warning'}}" icon="fas fa-terminal" heading="{{'Agent Configuration' | translate}}" large="yes" closeable="yes">
+  <div class="modal-body">
+    <h4 translate>This Device</h4>
+    <p ng-if="agentcfg.status.spec">
+      <span translate>Spec</span>: <code>{{agentcfg.status.spec}}</code>
+      <span ng-if="agentcfg.status.folder">(<span translate>folder</span> {{folders[agentcfg.status.folder].label || agentcfg.status.folder}})</span>
+    </p>
+    <div ng-switch="agentcfgState(agentcfg.status)">
+      <p ng-switch-when="pending" translate>Not checked yet.</p>
+      <p ng-switch-when="error" class="text-danger">{{agentcfg.status.error}}</p>
+      <p ng-switch-when="ok" class="text-success">
+        <span translate>The agents match the spec.</span>
+        <small class="text-muted">{{agentcfg.status.report.checked_at | date:"yyyy-MM-dd HH:mm:ss"}}</small>
+      </p>
+      <p ng-switch-when="drift" class="text-danger">
+        <span translate>The agents differ from the spec.</span>
+        {{agentcfg.status.report.errors}} <span translate>errors</span>, {{agentcfg.status.report.warnings}} <span translate>warnings</span>
+        <small class="text-muted">{{agentcfg.status.report.checked_at | date:"yyyy-MM-dd HH:mm:ss"}}</small>
+      </p>
+    </div>
+    <table class="table table-condensed table-striped" ng-if="agentcfg.status.report.findings.length > 0">
+      <thead>
+        <tr>
+          <th translate>Severity</th>
+          <th translate>Agent</th>
+          <th translate>Rule</th>
+          <th translate>Location</th>
+          <th translate>Message</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr ng-repeat="finding in agentcfg.status.report.findings">
+          <td ng-class="{'text-danger': finding.severity == 'error', 'text-warning': finding.severity != 'error'}">{{finding.severity}}</td>
+          <td>{{finding.agent}}</td>
+          <td><code>{{finding.rule}}</code></td>
+          <td>{{finding.location}}<br ng-if="finding.source"/><small ng-if="finding.source" class="text-muted">{{finding.source}}</small></td>
+          <td style="white-space: normal">{{finding.message}}</td>
+        </tr>
+      </tbody>
+    </table>
+    <p ng-if="agentcfg.status.applyError" class="text-warning">{{agentcfg.status.applyError}}</p>
+    <p ng-if="agentcfg.status.lastApply.written">
+      <span translate>Last written</span>
+      {{agentcfg.status.lastApply.applied_at | date:"yyyy-MM-dd HH:mm:ss"}}:
+      <span ng-repeat="file in agentcfg.status.lastApply.files"><code>{{file.path}}</code>{{$last ? '' : ', '}}</span>
+    </p>
+
+    <div ng-if="agentcfg.applied">
+      <h5 ng-if="!agentcfg.applied.written" translate>Changes that apply would make</h5>
+      <h5 ng-if="agentcfg.applied.written" translate>Changes written</h5>
+      <p ng-if="agentcfg.applied.files.length == 0" translate>Nothing to change.</p>
+      <ul>
+        <li ng-repeat="file in agentcfg.applied.files">
+          <code>{{file.path}}</code>
+          <ul>
+            <li ng-repeat="change in file.changes">{{change}}</li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+    <p ng-if="agentcfg.applyError" class="text-danger">{{agentcfg.applyError}}</p>
+
+    <div ng-if="agentcfgFleetEnabled()">
+      <hr/>
+      <h4>
+        <span translate>Tailnet Devices</span>
+        <button type="button" class="btn btn-default btn-xs pull-right" ng-click="refreshAgentcfgFleet()">
+          <span class="fas fa-refresh"></span>&nbsp;<span translate>Refresh</span>
+        </button>
+      </h4>
+      <p ng-if="agentcfg.fleetError" class="text-danger">{{agentcfg.fleetError}}</p>
+      <p ng-if="!agentcfg.fleet && !agentcfg.fleetError" translate>Loading...</p>
+      <table class="table table-condensed" ng-if="agentcfg.fleet">
+        <thead>
+          <tr>
+            <th translate>Device</th>
+            <th translate>State</th>
+            <th class="text-right" translate>Errors</th>
+            <th class="text-right" translate>Warnings</th>
+            <th translate>Checked</th>
+          </tr>
+        </thead>
+        <tbody ng-repeat="member in agentcfg.fleet">
+          <tr ng-click="member._open = !member._open" style="cursor: pointer">
+            <td>
+              <span class="fas fa-fw" ng-class="member._open ? 'fa-minus-square' : 'fa-plus-square'" ng-if="member.status.report.findings.length > 0"></span>
+              {{member.name || member.node}}
+              <small ng-if="!member.node" class="text-muted" translate>(this device)</small>
+            </td>
+            <td ng-if="member.error" class="text-danger" colspan="4">{{member.error}}</td>
+            <td ng-if="!member.error" ng-switch="agentcfgState(member.status)">
+              <span ng-switch-when="ok" class="text-success" translate>In Sync</span>
+              <span ng-switch-when="drift" class="text-danger" translate>Differs</span>
+              <span ng-switch-when="error" class="text-danger" title="{{member.status.error}}">{{member.status.error}}</span>
+              <span ng-switch-default translate>Not checked yet.</span>
+            </td>
+            <td ng-if="!member.error" class="text-right">{{member.status.report.errors}}</td>
+            <td ng-if="!member.error" class="text-right">{{member.status.report.warnings}}</td>
+            <td ng-if="!member.error">{{member.status.report.checked_at | date:"yyyy-MM-dd HH:mm:ss"}}</td>
+          </tr>
+          <tr ng-if="member._open" ng-repeat="finding in member.status.report.findings">
+            <td></td>
+            <td colspan="4" style="white-space: normal">
+              <span ng-class="{'text-danger': finding.severity == 'error', 'text-warning': finding.severity != 'error'}">{{finding.severity}}</span>
+              {{finding.agent}} <code>{{finding.rule}}</code> {{finding.location}}: {{finding.message}}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-default btn-sm" ng-click="agentcfgApply(true)" ng-disabled="agentcfg.busy">
+      <span class="fas fa-eye"></span>&nbsp;<span translate>Preview Changes</span>
+    </button>
+    <button type="button" class="btn btn-warning btn-sm" ng-click="agentcfgApply(false)" ng-disabled="agentcfg.busy">
+      <span class="fas fa-check"></span>&nbsp;<span translate>Apply Spec</span>
+    </button>
+    <button type="button" class="btn btn-default btn-sm" data-dismiss="modal">
+      <span class="fas fa-times"></span>&nbsp;<span translate>Close</span>
+    </button>
+  </div>
+</modal>

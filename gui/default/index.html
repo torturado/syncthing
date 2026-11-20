@@ -310,6 +310,33 @@
         </div>
       </div>
 
+      <!-- Panel: Agent configuration drift -->
+
+      <div ng-if="agentcfgEnabled() && (agentcfgState(agentcfg.status) == 'drift' || agentcfgState(agentcfg.status) == 'error')" class="row">
+        <div class="col-md-12">
+          <div class="panel panel-warning">
+            <div class="panel-heading">
+              <h3 class="panel-title">
+                <div class="panel-icon">
+                  <span class="fas fa-terminal"></span>
+                </div>
+                <span translate>Agent Configuration</span>
+              </h3>
+            </div>
+            <div class="panel-body">
+              <p ng-if="agentcfgState(agentcfg.status) == 'drift'"><span translate>The AI coding agents on this device differ from the spec.</span> {{agentcfg.status.report.errors}} <span translate>errors</span></p>
+              <p ng-if="agentcfgState(agentcfg.status) == 'error'">{{agentcfg.status.error}}</p>
+            </div>
+            <div class="panel-footer">
+              <button type="button" class="btn btn-sm btn-default pull-right" ng-click="showAgentcfg()">
+                <span class="fas fa-eye"></span>&nbsp;<span translate>Show Details</span>
+              </button>
+              <div class="clearfix"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Panel: FS watcher errors -->
 
       <div ng-if="sizeOf(fsWatcherErrorMap()) > 0" class="row">
@@ -758,6 +785,17 @@
                         </span>
                       </td>
                     </tr>
+                    <tr ng-if="agentcfgEnabled()">
+                      <th><span class="fas fa-fw fa-terminal"></span>&nbsp;<span translate>Agent Configuration</span></th>
+                      <td class="text-right">
+                        <a href="" ng-click="showAgentcfg()" ng-switch="agentcfgState(agentcfg.status)">
+                          <span ng-switch-when="ok" class="text-success" translate>In Sync</span>
+                          <span ng-switch-when="drift" class="text-danger">{{agentcfg.status.report.errors}} <span translate>errors</span></span>
+                          <span ng-switch-when="error" class="text-danger" translate>Error</span>
+                          <span ng-switch-default translate>Not checked yet.</span>
+                        </a>
+                      </td>
+                    </tr>
                     <tr>
                       <th><span class="far fa-fw fa-clock"></span>&nbsp;<span translate>Uptime</span></th>
                       <td class="text-right">{{system.uptime | duration:"m"}}</td>
@@ -1044,6 +1082,7 @@
   <ng-include src="'syncthing/core/majorUpgradeModalView.html'"></ng-include>
   <ng-include src="'syncthing/core/aboutModalView.html'"></ng-include>
   <ng-include src="'syncthing/core/connectivityStatusModalView.html'"></ng-include>
+  <ng-include src="'syncthing/agentcfg/agentcfgModalView.html'"></ng-include>
   <ng-include src="'syncthing/folder/removeFolderDialogView.html'"></ng-include>
   <ng-include src="'syncthing/folder/revertOverrideView.html'"></ng-include>
   <ng-include src="'syncthing/device/removeDeviceDialogView.html'"></ng-include>

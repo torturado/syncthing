@@ -1,0 +1,529 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// Package agentcfg runs github.com/torturado/agentcfg inside Syncthing: it
+// checks the configuration of the AI coding agents in this user's home
+// against a spec that usually travels in a shared folder, corrects it when
+// asked to, and serves the report to the GUI and, when enabled, to the tailnet.
+//
+// The security behaviour is specified in
+// docs/tailscale/agentcfg-threat-model.md.
+package agentcfg
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/thejerf/suture/v4"
+	agentcfglib "github.com/torturado/agentcfg"
+
+	"github.com/syncthing/syncthing/internal/slogutil"
+	"github.com/syncthing/syncthing/lib/config"
+	"github.com/syncthing/syncthing/lib/events"
+	"github.com/syncthing/syncthing/lib/fs"
+	"github.com/syncthing/syncthing/lib/svcutil"
+)
+
+const (
+	// SpecFileName is the spec looked for at the root of the shared folders
+	// when no spec path is configured.
+	SpecFileName = "agentcfg.toml"
+
+	// A burst of triggers runs once, debounceQuiet after the last of them,
+	// and at most debounceMax after the first.
+	debounceQuiet = 2 * time.Second
+	debounceMax   = 10 * time.Second
+
+	defaultIntervalS = 600
+	minIntervalS     = 60
+)
+
+var errDisabled = errors.New("agentcfg is disabled")
+
+// Status is what the service knows about this device's agent
+// configuration. It is served as JSON.
+type Status struct {
+	// Spec is the spec checked against, and Folder the ID of the shared
+	// folder that holds it, if any.
+	Spec   string `json:"spec"`
+	Folder string `json:"folder"`
+	// Report is the last check, or nil when it could not be made; Error
+	// says why.
+	Report *agentcfglib.Report `json:"report"`
+	Error  string              `json:"error"`
+	// LastApply is the last apply that wrote or failed, and ApplyError why
+	// the last apply failed or why automatic apply did not run.
+	LastApply  *agentcfglib.ApplyReport `json:"lastApply"`
+	ApplyError string                   `json:"applyError"`
+}
+
+// Service checks the agents' configuration while agentcfgEnabled is set,
+// and serves the fleet listener while agentcfgFleetEnabled is also set. It
+// is a suture service.
+type Service struct {
+	*suture.Supervisor
+
+	cfg      config.Wrapper
+	evLogger events.Logger
+	tailnet  Tailnet
+
+	// Fixed outside tests.
+	home      string // empty for the user's home
+	hostNames func(context.Context) []string
+	fleetPort uint16
+
+	checksChanged chan struct{}
+	fleetChanged  chan struct{}
+
+	// runMut serializes checks and applies; stamps is what the watched
+	// files looked like before the last check.
+	runMut sync.Mutex
+	stamps map[string]fileStamp
+
+	mut       sync.Mutex
+	status    Status
+	signature string
+
+	fleetMut     sync.Mutex
+	fleetServers map[string]*fleetServer
+}
+
+// New returns the agentcfg service. tailnet may be nil, which disables the
+// fleet view.
+func New(cfg config.Wrapper, evLogger events.Logger, tailnet Tailnet) *Service {
+	s := &Service{
+		Supervisor:    suture.New("agentcfg.Service", svcutil.SpecWithDebugLogger()),
+		cfg:           cfg,
+		evLogger:      evLogger,
+		tailnet:       tailnet,
+		hostNames:     agentcfglib.DefaultHostNames,
+		fleetPort:     FleetPort,
+		checksChanged: make(chan struct{}, 1),
+		fleetChanged:  make(chan struct{}, 1),
+		fleetServers:  make(map[string]*fleetServer),
+		signature:     signature(Status{}),
+	}
+	s.Add(svcutil.AsService(s.serveChecks, fmt.Sprintf("%s/serveChecks", s)))
+	if tailnet != nil {
+		s.Add(svcutil.AsService(s.serveFleet, fmt.Sprintf("%s/serveFleet", s)))
+	}
+	return s
+}
+
+// Status returns the current status.
+func (s *Service) Status() Status {
+	s.mut.Lock()
+	defer s.mut.Unlock()
+	return s.status
+}
+
+func (s *Service) serveChecks(ctx context.Context) error {
+	s.cfg.Subscribe(s)
+	defer s.cfg.Unsubscribe(s)
+	for {
+		if s.cfg.Options().AgentcfgEnabled {
+			s.follow(ctx)
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		s.publish(Status{})
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-s.checksChanged:
+		}
+	}
+}
+
+// trigger says why a run was asked for.
+type trigger int
+
+const (
+	triggerNone trigger = iota
+	// A watched agent file changed; this alone runs only if the files
+	// differ from what the last run left, so that our own writes do not
+	// trigger another run.
+	triggerFile
+	// Anything else: the spec, the configuration or the interval.
+	triggerAlways
+)
+
+// follow runs checks on triggers until the context ends or agentcfg is
+// disabled.
+func (s *Service) follow(ctx context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// The events are read beside the loop, which waits for runs: a
+	// subscriber that falls behind delays the event logger for everyone.
+	var target atomic.Pointer[specTarget]
+	specChanged := make(chan struct{}, 1)
+	sub := s.evLogger.Subscribe(events.LocalIndexUpdated | events.ItemFinished)
+	defer sub.Unsubscribe()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev := <-sub.C():
+				if target.Load().concerns(ev) {
+					select {
+					case specChanged <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	watch := newFileWatch()
+	defer watch.stop()
+
+	interval := s.interval()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	debounce := time.NewTimer(0)
+	debounce.Stop()
+	var pending trigger
+	var first time.Time
+	schedule := func(t trigger) {
+		now := time.Now()
+		if pending == triggerNone {
+			first = now
+		}
+		pending = max(pending, t)
+		debounce.Reset(min(debounceQuiet, debounceMax-now.Sub(first)))
+	}
+
+	current, files := s.refresh(ctx)
+	target.Store(&current)
+	watch.set(files)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.checksChanged:
+			if !s.cfg.Options().AgentcfgEnabled {
+				return
+			}
+			if next := s.interval(); next != interval {
+				interval = next
+				ticker.Reset(interval)
+			}
+			schedule(triggerAlways)
+		case <-specChanged:
+			schedule(triggerAlways)
+		case info := <-watch.events:
+			if watch.matches(info.Path()) {
+				schedule(triggerFile)
+			}
+		case <-ticker.C:
+			schedule(triggerAlways)
+		case <-debounce.C:
+			run := pending == triggerAlways || s.changedSinceRun()
+			pending = triggerNone
+			if run {
+				current, files := s.refresh(ctx)
+				target.Store(&current)
+				watch.set(files)
+			}
+		}
+	}
+}
+
+// interval is the time between runs when nothing triggers one sooner. It is
+// only a backstop to the triggers.
+func (s *Service) interval() time.Duration {
+	seconds := s.cfg.Options().AgentcfgIntervalS
+	if seconds == 0 {
+		seconds = defaultIntervalS
+	}
+	return time.Duration(max(seconds, minIntervalS)) * time.Second
+}
+
+// refresh applies the spec when automatic apply is on, then checks, and
+// publishes the result. It returns the spec it used and the files to watch.
+func (s *Service) refresh(ctx context.Context) (specTarget, []string) {
+	s.runMut.Lock()
+	defer s.runMut.Unlock()
+
+	cfg := s.cfg.RawCopy()
+	target, err := findSpec(cfg)
+	prev := s.Status()
+	st := Status{Spec: target.path, Folder: target.folder, LastApply: prev.LastApply}
+	if err != nil {
+		st.Error = err.Error()
+		return target, s.checkLocked(ctx, st, agentcfglib.Options{Home: s.home})
+	}
+	opts := agentcfglib.Options{SpecPath: target.path, Home: s.home, HostNames: s.hostNames(ctx)}
+	if cfg.Options.AgentcfgApply == config.AgentcfgApplyAuto {
+		if !target.explicit {
+			st.ApplyError = "automatic apply needs agentcfgSpecPath; a spec found in a shared folder is only checked"
+		} else {
+			report, err := agentcfglib.Apply(ctx, opts)
+			if err != nil {
+				slog.WarnContext(ctx, "Failed to apply the agent configuration spec", slogutil.FilePath(target.path), slogutil.Error(err))
+				st.ApplyError = err.Error()
+				st.LastApply = &report
+			} else if report.Written {
+				slog.InfoContext(ctx, "Applied the agent configuration spec", slogutil.FilePath(target.path), slog.Any("files", writtenPaths(report)))
+				st.LastApply = &report
+			}
+		}
+	}
+	return target, s.checkLocked(ctx, st, opts)
+}
+
+// Apply writes the spec, or with dryRun returns what it would write, at
+// the owner's request: it runs whatever agentcfgApply says.
+func (s *Service) Apply(ctx context.Context, dryRun bool) (agentcfglib.ApplyReport, error) {
+	if !s.cfg.Options().AgentcfgEnabled {
+		return agentcfglib.ApplyReport{}, errDisabled
+	}
+	s.runMut.Lock()
+	defer s.runMut.Unlock()
+
+	target, err := findSpec(s.cfg.RawCopy())
+	if err != nil {
+		return agentcfglib.ApplyReport{}, err
+	}
+	opts := agentcfglib.Options{SpecPath: target.path, Home: s.home, HostNames: s.hostNames(ctx)}
+	if dryRun {
+		return agentcfglib.Plan(ctx, opts)
+	}
+	report, err := agentcfglib.Apply(ctx, opts)
+	st := Status{Spec: target.path, Folder: target.folder, LastApply: &report}
+	if err != nil {
+		st.ApplyError = err.Error()
+	} else if report.Written {
+		slog.InfoContext(ctx, "Applied the agent configuration spec on request", slogutil.FilePath(target.path), slog.Any("files", writtenPaths(report)))
+	}
+	s.checkLocked(ctx, st, opts)
+	return report, err
+}
+
+// checkLocked records how the watched files look, then checks unless st
+// already holds an error, and publishes st. It returns the watched files.
+func (s *Service) checkLocked(ctx context.Context, st Status, opts agentcfglib.Options) []string {
+	files, err := watchFiles(opts)
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to list the agent configuration files", slogutil.Error(err))
+	}
+	// Recorded before checking, so that a write the check does not see
+	// still differs from the record.
+	s.stamps = stampFiles(files)
+	if st.Error == "" {
+		report, err := agentcfglib.Check(ctx, opts)
+		if err != nil {
+			st.Error = err.Error()
+		} else {
+			st.Report = &report
+		}
+	}
+	s.publish(st)
+	return files
+}
+
+// changedSinceRun reports whether the watched files differ from what they
+// were before the last check.
+func (s *Service) changedSinceRun() bool {
+	s.runMut.Lock()
+	defer s.runMut.Unlock()
+	return s.stamps == nil || !maps.Equal(s.stamps, stampFiles(slices.Collect(maps.Keys(s.stamps))))
+}
+
+// publish stores the status, and logs and announces it when the result
+// changed, rather than on every run.
+func (s *Service) publish(st Status) {
+	sig := signature(st)
+	s.mut.Lock()
+	s.status = st
+	changed := sig != s.signature
+	s.signature = sig
+	s.mut.Unlock()
+	if !changed {
+		return
+	}
+
+	data := map[string]any{"error": st.Error, "applyError": st.ApplyError}
+	switch {
+	case st.Error != "":
+		slog.Warn("Failed to check the agent configuration", slogutil.Error(st.Error))
+	case st.Report == nil:
+		// Disabled.
+	case st.Report.OK():
+		slog.Info("Agent configuration matches the spec", slogutil.FilePath(st.Spec))
+	default:
+		slog.Warn("Agent configuration differs from the spec", slogutil.FilePath(st.Spec), slog.Int("errors", st.Report.Errors), slog.Int("warnings", st.Report.Warnings))
+	}
+	if st.Report != nil {
+		data["ok"] = st.Report.OK()
+		data["errors"] = st.Report.Errors
+		data["warnings"] = st.Report.Warnings
+	}
+	s.evLogger.Log(events.AgentConfigChanged, data)
+}
+
+// signature identifies what a status says, regardless of when it was made
+// and of the order of its findings.
+func signature(st Status) string {
+	parts := []string{st.Spec, st.Error, st.ApplyError}
+	if st.Report != nil {
+		findings := make([]string, len(st.Report.Findings))
+		for i, f := range st.Report.Findings {
+			findings[i] = strings.Join([]string{string(f.Severity), string(f.Agent), f.Rule, f.Source, f.Location, f.Message}, "\x00")
+		}
+		slices.Sort(findings)
+		parts = append(parts, "report")
+		parts = append(parts, findings...)
+	}
+	return strings.Join(parts, "\x01")
+}
+
+func writtenPaths(report agentcfglib.ApplyReport) []string {
+	paths := make([]string, len(report.Files))
+	for i, f := range report.Files {
+		paths[i] = f.Path
+	}
+	return paths
+}
+
+func (s *Service) CommitConfiguration(from, to config.Configuration) bool {
+	if !sameSettings(from, to) {
+		for _, c := range []chan struct{}{s.checksChanged, s.fleetChanged} {
+			select {
+			case c <- struct{}{}:
+			default:
+			}
+		}
+	}
+	return true
+}
+
+// sameSettings reports whether two configurations run agentcfg the same
+// way: the same options and the same folders to find the spec in.
+func sameSettings(a, b config.Configuration) bool {
+	ao, bo := a.Options, b.Options
+	if ao.AgentcfgEnabled != bo.AgentcfgEnabled || ao.AgentcfgSpecPath != bo.AgentcfgSpecPath ||
+		ao.AgentcfgApply != bo.AgentcfgApply || ao.AgentcfgIntervalS != bo.AgentcfgIntervalS ||
+		ao.AgentcfgFleetEnabled != bo.AgentcfgFleetEnabled {
+		return false
+	}
+	return slices.EqualFunc(a.Folders, b.Folders, func(x, y config.FolderConfiguration) bool {
+		return x.ID == y.ID && x.Path == y.Path && x.FilesystemType == y.FilesystemType && x.Type == y.Type
+	})
+}
+
+func (s *Service) String() string {
+	return fmt.Sprintf("agentcfg.Service@%p", s)
+}
+
+// specTarget is the spec in use and where it lives.
+type specTarget struct {
+	path     string
+	folder   string // ID of the shared folder that holds it, if any
+	name     string // its name within that folder
+	explicit bool   // named by agentcfgSpecPath, rather than found
+}
+
+// findSpec returns the configured spec, or the only agentcfg.toml at the
+// root of a shared folder.
+func findSpec(cfg config.Configuration) (specTarget, error) {
+	type root struct{ id, path string }
+	var roots []root
+	for _, f := range cfg.Folders {
+		// The content of a receive-encrypted folder is not readable here.
+		if f.FilesystemType != config.FilesystemTypeBasic || f.Type == config.FolderTypeReceiveEncrypted {
+			continue
+		}
+		if path, err := fs.ExpandTilde(f.Path); err == nil {
+			roots = append(roots, root{f.ID, filepath.Clean(path)})
+		}
+	}
+
+	if path := cfg.Options.AgentcfgSpecPath; path != "" {
+		path, err := fs.ExpandTilde(path)
+		if err != nil {
+			return specTarget{}, fmt.Errorf("agentcfgSpecPath: %w", err)
+		}
+		path, err = filepath.Abs(path)
+		if err != nil {
+			return specTarget{}, fmt.Errorf("agentcfgSpecPath: %w", err)
+		}
+		target := specTarget{path: path, explicit: true}
+		// The innermost folder holding the spec is the one that syncs it.
+		for _, r := range roots {
+			rel, err := filepath.Rel(r.path, path)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			if target.folder == "" || len(rel) < len(target.name) {
+				target.folder, target.name = r.id, rel
+			}
+		}
+		return target, nil
+	}
+
+	var found []specTarget
+	for _, r := range roots {
+		path := filepath.Join(r.path, SpecFileName)
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			found = append(found, specTarget{path: path, folder: r.id, name: SpecFileName})
+		}
+	}
+	switch len(found) {
+	case 0:
+		return specTarget{}, errors.New("no shared folder holds " + SpecFileName + " at its root; share one or set agentcfgSpecPath")
+	case 1:
+		return found[0], nil
+	default:
+		ids := make([]string, len(found))
+		for i, t := range found {
+			ids[i] = t.folder
+		}
+		return specTarget{}, fmt.Errorf("several shared folders hold %s at their root (%s); set agentcfgSpecPath", SpecFileName, strings.Join(ids, ", "))
+	}
+}
+
+// concerns reports whether a LocalIndexUpdated or ItemFinished event is
+// about the spec. While no single spec is found, any folder's root spec
+// concerns it.
+func (t specTarget) concerns(ev events.Event) bool {
+	data, ok := ev.Data.(map[string]any)
+	if !ok {
+		return false
+	}
+	folder, _ := data["folder"].(string)
+	var names []string
+	switch ev.Type {
+	case events.LocalIndexUpdated:
+		names, _ = data["filenames"].([]string)
+	case events.ItemFinished:
+		if name, ok := data["item"].(string); ok {
+			names = []string{name}
+		}
+	}
+	if t.path == "" {
+		return slices.Contains(names, SpecFileName)
+	}
+	if t.folder == "" || folder != t.folder {
+		return false
+	}
+	return slices.ContainsFunc(names, func(name string) bool {
+		return filepath.FromSlash(name) == t.name
+	})
+}

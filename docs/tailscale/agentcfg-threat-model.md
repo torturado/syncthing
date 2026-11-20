@@ -30,13 +30,19 @@ Out of scope:
 ## Assets
 
 1. The agents' configuration files in the Syncthing user's home:
-   `~/.claude.json`, `~/.claude/settings.json`, `~/.codex/config.toml` and
-   `~/.codex/hooks.json`. An MCP server entry names a command that the agent
+   `~/.claude.json`, `~/.mcp.json` (or the file it links to),
+   `~/.claude/settings.json`, `~/.codex/config.toml` and `~/.codex/hooks.json`. An MCP server entry names a command that the agent
    runs, so writing these files is equivalent to running code as that user.
 2. The report: MCP server names, URLs and commands, hook commands, plugin
    names, file paths in the home directory, variable names and the host name.
-   It never holds a secret value: agentcfg records only whether a credential
-   is written in a file and which variables it references.
+   agentcfg never reads a header or variable value into it: it records only
+   whether a credential is written in a file, which variables it references
+   and a digest for comparison with the spec. URLs and command lines are
+   reported redacted: user information, query values, the value after a
+   credential name (`Authorization: …`, `api_key=…`, `--token …`) and Bearer
+   or Basic tokens become `REDACTED`. The redaction recognises these patterns
+   only; a credential passed as a bare argument, such as `tool s3cr3t`, is
+   reported as written.
 
 ## Trust assumptions
 
@@ -156,13 +162,15 @@ carries both tags.
 
 ### F5. Other threats
 
-- **Disclosure through the report.** A URL or a command line in the spec or the
-  agents' files is reported as written. Credentials must be references
-  (`${VAR}`), which agentcfg already requires of the spec and reports as
-  `literal-secret` in the agents' files.
+- **Disclosure through the report.** URLs and command lines from the spec and
+  the agents' files are reported with recognised credentials redacted (see
+  asset 2). A credential that matches none of the patterns, such as a bare
+  argument, reaches the report. Credentials belong in references (`${VAR}`),
+  which agentcfg requires of the spec and reports as `literal-secret` in the
+  agents' MCP and settings files; a hook command has no such check.
 - **Tailnet admin compromise.** An attacker who controls the policy can grant
-  read access to any tagged node, and so read every report. Reports never hold
-  secret values. Write access cannot be granted, because nothing on the
+  read access to any tagged node, and so read every report, with the limits on
+  what a report holds described above. Write access cannot be granted, because nothing on the
   listener writes.
 - **Resource use.** One `WhoIs` per request, with a timeout. The policy decides
   which nodes can reach port 22100 at all; grant `tcp:22100` only to the

@@ -16,7 +16,7 @@ import (
 	"github.com/torturado/agentcfg"
 )
 
-var secretVariables = []string{"PROXY_TOKEN", "SEARCH_API_KEY", "DEPLOY_TOKEN", "EVENTS_TOKEN"}
+var secretVariables = []string{"SEARCH_API_KEY", "DEPLOY_TOKEN", "EVENTS_TOKEN"}
 
 // copyHome copies a fixture home into a temporary directory, replacing @HOME@
 // with its path, so tests can write to it and absolute paths resolve.
@@ -98,11 +98,22 @@ func TestCleanMachineHasNoFindings(t *testing.T) {
 func TestReferencedVariablesMissingFromEnvironmentAreWarnings(t *testing.T) {
 	setVariables(t, false)
 	assertFindings(t, findings(t, options(t, copyHome(t, "clean"), baseSpec, "casa")), []string{
-		"claude warning unset-variable env.ANTHROPIC_AUTH_TOKEN",
 		"claude warning unset-variable mcpServers.search.headers.X-API-Key",
 		"claude warning unset-variable mcpServers.deploy.headers.Authorization",
 		"codex warning unset-variable mcp_servers.search.env_http_headers.X-API-Key",
 		"codex warning unset-variable mcp_servers.deploy.bearer_token_env_var",
+	})
+}
+
+func TestReferenceInSettingsEnvIsReportedAsUnexpanded(t *testing.T) {
+	setVariables(t, true)
+	home := copyHome(t, "clean")
+	settings := `{ "env": { "ANTHROPIC_AUTH_TOKEN": "${PROXY_TOKEN}" }, "enabledMcpjsonServers": ["search", "deploy"] }`
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assertFindings(t, findings(t, options(t, home, baseSpec, "casa")), []string{
+		"claude error unexpanded-variable env.ANTHROPIC_AUTH_TOKEN",
 	})
 }
 
@@ -310,7 +321,7 @@ func TestApplyCorrectsHookReinstall(t *testing.T) {
 	opts := options(t, home, baseSpec, "casa")
 	settings := filepath.Join(home, ".claude", "settings.json")
 	if err := os.WriteFile(settings, []byte(`{
-  "env": { "ANTHROPIC_AUTH_TOKEN": "${PROXY_TOKEN}", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1" },
+  "env": { "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1" },
   "enabledMcpjsonServers": ["search", "deploy"],
   "hooks": {
     "SessionStart": [
@@ -395,4 +406,19 @@ func snapshot(t *testing.T, home string) map[string]string {
 		return nil
 	})
 	return files
+}
+
+func TestSecretsLiveNextToTheSpecALinkPointsTo(t *testing.T) {
+	synced := t.TempDir()
+	spec := filepath.Join(synced, "agentcfg.toml")
+	if err := os.WriteFile(spec, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "spec.toml")
+	if err := os.Symlink(spec, link); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := agentcfg.SecretsPath(link), filepath.Join(synced, "secrets.age"); got != want {
+		t.Errorf("SecretsPath = %s, want %s", got, want)
+	}
 }

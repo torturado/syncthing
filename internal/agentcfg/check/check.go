@@ -72,6 +72,12 @@ func Run(desired spec.Spec, inv model.Inventory) []Finding {
 	}
 
 	for _, env := range inv.SettingsEnv {
+		// Claude Code sets settings env values as written: a reference
+		// reaches the agent as the literal text ${NAME}.
+		if len(env.Field.EnvRefs) > 0 {
+			findings = append(findings, Finding{Error, env.Agent, "unexpanded-variable", env.Source, env.Field.Path, "settings env values are not expanded; set the variable in the environment instead, or use apiKeyHelper for a credential"})
+			continue
+		}
 		findings = append(findings, fieldFindings(env.Agent, env.Source, env.Field, true)...)
 	}
 

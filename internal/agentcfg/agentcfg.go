@@ -221,8 +221,12 @@ func DefaultHostNames(ctx context.Context) []string {
 }
 
 // SecretsPath is where the encrypted secrets live: next to the spec, so they
-// travel through the same synced folder.
+// travel through the same synced folder. A spec reached through a symlink,
+// such as the default path linked to a synced folder, is followed first.
 func SecretsPath(specPath string) string {
+	if resolved, err := filepath.EvalSymlinks(specPath); err == nil {
+		specPath = resolved
+	}
 	return filepath.Join(filepath.Dir(specPath), "secrets.age")
 }
 

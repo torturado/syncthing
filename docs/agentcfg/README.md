@@ -87,6 +87,7 @@ hooks keep `${CLAUDE_PLUGIN_ROOT}` unexpanded, so the same name works on every m
 | `undeclared-server` | error | An enabled server is not in the spec, in any scope, including one a plugin brings. |
 | `undeclared-hook` | error | A hook is not in the spec, such as one reinstalled by another tool or carried by a plugin. |
 | `undeclared-plugin` | error | A Claude Code plugin is enabled machine-wide but not in the spec. |
+| `unexpanded-variable` | error | A Claude Code settings `env` value references `${VAR}`, which Claude Code passes on as written. |
 | `literal-secret` | error | A credential header, token or variable is written in the file instead of referenced. |
 | `shadowed-server` | warning | The same server is defined in several scopes. |
 | `unset-variable` | warning | A referenced variable is not set where the check ran, so the server may start unauthenticated. |
@@ -152,7 +153,10 @@ or a backtick.
 3. Add the `headers` or `env` references to the spec's servers. Without them, `apply` would
    write the servers without credentials.
 4. Remove the literal entries from files `apply` does not own (`~/.mcp.json`, the `env` of
-   `settings.json`), then `agentcfg apply --write` and `agentcfg check`.
+   `settings.json`), then `agentcfg apply --write` and `agentcfg check`. Claude Code does not
+   expand `${VAR}` in settings `env`: drop the key and let the agent inherit the variable, or,
+   for the API credential, use `apiKeyHelper`, for example
+   `"apiKeyHelper": "printf %s \"$PROXY_TOKEN\""`.
 
 ## Library
 

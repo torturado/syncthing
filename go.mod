@@ -38,7 +38,7 @@ require (
 	github.com/syncthing/notify v0.0.0-20250528144937-c7027d4f7465
 	github.com/syndtr/goleveldb v1.0.1-0.20220721030215-126854af5e6d
 	github.com/thejerf/suture/v4 v4.0.6
-	github.com/torturado/agentcfg v0.0.0-20261120075836-fe529c81b56f
+	github.com/torturado/agentcfg v0.1.0
 	github.com/urfave/cli v1.22.17
 	github.com/vitrun/qart v0.0.0-20160531060029-bf64b92db6b0
 	github.com/willabides/kongplete v0.4.0

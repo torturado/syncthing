@@ -19,6 +19,10 @@ import (
 	"github.com/syncthing/syncthing/lib/structutil"
 )
 
+// AgentcfgApplyAuto is the OptionsConfiguration.AgentcfgApply value that
+// turns automatic apply on.
+const AgentcfgApplyAuto = "auto"
+
 type OptionsConfiguration struct {
 	RawListenAddresses          []string `json:"listenAddresses" xml:"listenAddress" default:"default"`
 	RawGlobalAnnServers         []string `json:"globalAnnounceServers" xml:"globalAnnounceServer" default:"default"`
@@ -93,6 +97,23 @@ type OptionsConfiguration struct {
 	// are bound to them, relay listeners and NAT port mappings are not
 	// used, and nothing listens while there is no tailnet address.
 	TailscaleListenOnly bool `json:"tailscaleListenOnly" xml:"tailscaleListenOnly" default:"false"`
+
+	// Check the configuration of the AI coding agents on this device
+	// against an agentcfg spec. See lib/agentcfg.
+	AgentcfgEnabled bool `json:"agentcfgEnabled" xml:"agentcfgEnabled" default:"false"`
+	// The spec to check against. Empty means agentcfg.toml at the root of
+	// the one shared folder that holds it.
+	AgentcfgSpecPath string `json:"agentcfgSpecPath" xml:"agentcfgSpecPath"`
+	// "auto" writes the spec to the agents' configuration whenever it
+	// drifts; anything else, such as "off", only reports.
+	AgentcfgApply string `json:"agentcfgApply" xml:"agentcfgApply"`
+	// Seconds between checks when nothing triggers one sooner; zero means
+	// 600, and the minimum is 60.
+	AgentcfgIntervalS int `json:"agentcfgIntervalS" xml:"agentcfgIntervalS"`
+	// Serve this device's report to tailnet nodes that the tailnet policy
+	// grants github.com/torturado/cap/agentcfg, and show the reports of
+	// the tagged peers. See docs/tailscale/agentcfg-threat-model.md.
+	AgentcfgFleetEnabled bool `json:"agentcfgFleetEnabled" xml:"agentcfgFleetEnabled" default:"false"`
 
 	// Legacy deprecated
 	DeprecatedUPnPEnabled        bool     `json:"-" xml:"upnpEnabled,omitempty"`        // Deprecated: Do not use.

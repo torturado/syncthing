@@ -606,6 +606,7 @@ angular.module('syncthing.core')
 
             refreshNoAuthWarning();
             setDefaultTheme();
+            refreshAgentcfg();
 
             if (!hasConfig) {
                 $scope.$emit('ConfigLoaded');
@@ -1669,6 +1670,88 @@ angular.module('syncthing.core')
             }
             $scope.connectivityStatusParams = params;
             showModal('#connectivity-status');
+        };
+
+        // agentcfg: the configuration of the AI coding agents on this
+        // device and, with the fleet view, on the tagged tailnet peers.
+        $scope.agentcfg = {
+            status: null,
+            fleet: null,
+            fleetError: null,
+            applied: null,
+            applyError: null,
+            busy: false
+        };
+
+        $scope.agentcfgEnabled = function () {
+            return !!($scope.config.options && $scope.config.options.agentcfgEnabled);
+        };
+
+        $scope.agentcfgFleetEnabled = function () {
+            return $scope.agentcfgEnabled() && $scope.config.options.agentcfgFleetEnabled;
+        };
+
+        // agentcfgState is 'ok', 'drift', 'error' or, before the first
+        // check, 'pending'.
+        $scope.agentcfgState = function (status) {
+            if (!status) {
+                return 'pending';
+            }
+            if (status.error) {
+                return 'error';
+            }
+            if (!status.report) {
+                return 'pending';
+            }
+            return status.report.errors > 0 ? 'drift' : 'ok';
+        };
+
+        function refreshAgentcfg() {
+            if (!$scope.agentcfgEnabled()) {
+                $scope.agentcfg.status = null;
+                return;
+            }
+            $http.get(urlbase + '/agentcfg/report').success(function (data) {
+                $scope.agentcfg.status = data;
+            }).error($scope.emitHTTPError);
+        }
+
+        $scope.$on(Events.AGENT_CONFIG_CHANGED, refreshAgentcfg);
+
+        $scope.refreshAgentcfgFleet = function () {
+            $scope.agentcfg.fleet = null;
+            $scope.agentcfg.fleetError = null;
+            if (!$scope.agentcfgFleetEnabled()) {
+                return;
+            }
+            $http.get(urlbase + '/agentcfg/fleet').success(function (data) {
+                $scope.agentcfg.fleet = data;
+            }).error(function (data) {
+                $scope.agentcfg.fleetError = data;
+            });
+        };
+
+        $scope.showAgentcfg = function () {
+            $scope.agentcfg.applied = null;
+            $scope.agentcfg.applyError = null;
+            refreshAgentcfg();
+            $scope.refreshAgentcfgFleet();
+            showModal('#agentcfg');
+        };
+
+        // agentcfgApply writes the spec, or with dryRun shows what it would
+        // write.
+        $scope.agentcfgApply = function (dryRun) {
+            $scope.agentcfg.busy = true;
+            $scope.agentcfg.applyError = null;
+            $http.post(urlbase + '/agentcfg/apply' + (dryRun ? '?dryrun=true' : '')).success(function (data) {
+                $scope.agentcfg.busy = false;
+                $scope.agentcfg.applied = data;
+                refreshAgentcfg();
+            }).error(function (data) {
+                $scope.agentcfg.busy = false;
+                $scope.agentcfg.applyError = data;
+            });
         };
 
         $scope.logging = {

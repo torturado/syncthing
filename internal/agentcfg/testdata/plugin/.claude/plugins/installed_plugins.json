@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "plugins": {
+    "notify@example": [
+      { "scope": "user", "installPath": "@HOME@/.claude/plugins/cache/example/notify/1.0.0", "version": "1.0.0" }
+    ],
+    "skills-only@example": [
+      { "scope": "user", "installPath": "@HOME@/.claude/plugins/cache/example/skills-only/1.0.0", "version": "1.0.0" }
+    ]
+  }
+}

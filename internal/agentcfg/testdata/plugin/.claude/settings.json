@@ -1,0 +1,4 @@
+{
+  "enabledPlugins": { "notify@example": true, "skills-only@example": true, "disabled@example": false },
+  "enabledMcpjsonServers": ["search", "deploy"]
+}

@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "search": { "type": "http", "url": "https://search.example.com/mcp", "headers": { "X-API-Key": "${SEARCH_API_KEY}" } },
+    "deploy": { "type": "http", "url": "https://deploy.example.ts.net/mcp", "headers": { "Authorization": "Bearer ${DEPLOY_TOKEN}" } },
+    "unapproved": { "type": "http", "url": "https://unapproved.example.com/mcp" }
+  }
+}

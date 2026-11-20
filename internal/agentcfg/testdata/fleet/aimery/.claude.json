@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "search": { "type": "http", "url": "https://search.example.com/mcp", "headers": { "X-API-Key": "${SEARCH_API_KEY}" } },
+    "gpu": { "type": "stdio", "command": "gpu-mcp", "args": ["--device", "0"] }
+  },
+  "projects": { "/home/user/models": { "hasTrustDialogAccepted": true, "allowedTools": ["Bash(nvidia-smi:*)"] } }
+}

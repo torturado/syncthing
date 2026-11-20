@@ -4,7 +4,6 @@ package check
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"slices"
 	"sort"
 
@@ -19,17 +18,16 @@ const (
 	Warning Severity = "warning"
 )
 
+// Finding is one deviation from the spec. Source is the file it was read
+// from and Location the key inside it.
 type Finding struct {
-	Severity Severity
-	Agent    model.Agent
-	Rule     string
-	Source   string
-	Location string
-	Message  string
+	Severity Severity    `json:"severity"`
+	Agent    model.Agent `json:"agent"`
+	Rule     string      `json:"rule"`
+	Source   string      `json:"source,omitempty"`
+	Location string      `json:"location"`
+	Message  string      `json:"message"`
 }
-
-// secretName matches header and variable names that carry credentials.
-var secretName = regexp.MustCompile(`(?i)authorization|token|secret|passw|api[-_]?key|cookie|credential|private[-_]?key|(^|[-_])key$`)
 
 func Run(desired spec.Spec, inv model.Inventory) []Finding {
 	var findings []Finding
@@ -77,6 +75,12 @@ func Run(desired spec.Spec, inv model.Inventory) []Finding {
 		findings = append(findings, fieldFindings(env.Agent, env.Source, env.Field, true)...)
 	}
 
+	for _, plugin := range inv.Plugins {
+		if !slices.Contains(desired.Plugins[plugin.Agent], plugin.Name) {
+			findings = append(findings, Finding{Error, plugin.Agent, "undeclared-plugin", plugin.Source, "enabledPlugins." + plugin.Name, "enabled but not in the spec"})
+		}
+	}
+
 	for _, hook := range inv.Hooks {
 		if !slices.Contains(desired.Hooks[hook.Agent], hook.Command) {
 			findings = append(findings, Finding{Error, hook.Agent, "undeclared-hook", hook.Source, hook.Event, hook.Command})
@@ -101,7 +105,7 @@ func Run(desired spec.Spec, inv model.Inventory) []Finding {
 
 func fieldFindings(agent model.Agent, source string, field model.Field, enabled bool) []Finding {
 	var findings []Finding
-	if field.Literal && (field.Kind == model.TokenField || secretName.MatchString(field.Name)) {
+	if field.Literal && (field.Kind == model.TokenField || model.SecretName.MatchString(field.Name)) {
 		findings = append(findings, Finding{Error, agent, "literal-secret", source, field.Path, "credential written in the file; reference an environment variable instead"})
 	}
 	if enabled {

@@ -4,6 +4,11 @@
 // written in the file and which environment variables it reads.
 package model
 
+import (
+	"regexp"
+	"strings"
+)
+
 type Agent string
 
 const (
@@ -13,6 +18,13 @@ const (
 
 // Agents lists every supported agent in report order.
 var Agents = []Agent{Claude, Codex}
+
+// SecretName matches header and variable names that carry credentials.
+var SecretName = regexp.MustCompile(`(?i)authorization|token|secret|passw|api[-_]?key|cookie|credential|private[-_]?key|(^|[-_])key$`)
+
+// EnvRef matches ${VAR} and ${VAR:-default}, the expansion Claude Code applies
+// to MCP server command, args, env, url and headers.
+var EnvRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}`)
 
 type FieldKind string
 
@@ -50,6 +62,13 @@ type Hook struct {
 	Command string
 }
 
+// Plugin is a Claude Code plugin enabled in a machine-wide settings file.
+type Plugin struct {
+	Agent  Agent
+	Name   string
+	Source string
+}
+
 // SettingsEnv is an environment variable set by an agent's settings file.
 type SettingsEnv struct {
 	Agent  Agent
@@ -60,22 +79,35 @@ type SettingsEnv struct {
 type Inventory struct {
 	MCPServers  []MCPServer
 	Hooks       []Hook
+	Plugins     []Plugin
 	SettingsEnv []SettingsEnv
 }
 
 func (inv *Inventory) Merge(other Inventory) {
 	inv.MCPServers = append(inv.MCPServers, other.MCPServers...)
 	inv.Hooks = append(inv.Hooks, other.Hooks...)
+	inv.Plugins = append(inv.Plugins, other.Plugins...)
 	inv.SettingsEnv = append(inv.SettingsEnv, other.SettingsEnv...)
 }
 
-// HookGroups is the hooks shape shared by Claude Code settings and Codex
-// hooks.json: event name → matcher groups → handlers.
+// HookHandler is one hook command. Claude Code also accepts the arguments as
+// a separate list.
+type HookHandler struct {
+	Type    string   `json:"type" toml:"type"`
+	Command string   `json:"command" toml:"command"`
+	Args    []string `json:"args" toml:"args"`
+}
+
+// HookCommand is how a hook is named in reports and in the spec: the command
+// followed by its arguments.
+func (h HookHandler) HookCommand() string {
+	return strings.Join(append([]string{h.Command}, h.Args...), " ")
+}
+
+// HookGroups is the hooks shape shared by Claude Code settings, Claude Code
+// plugins and Codex hooks.json: event name → matcher groups → handlers.
 type HookGroups map[string][]struct {
-	Hooks []struct {
-		Type    string `json:"type" toml:"type"`
-		Command string `json:"command" toml:"command"`
-	} `json:"hooks" toml:"hooks"`
+	Hooks []HookHandler `json:"hooks" toml:"hooks"`
 }
 
 func (groups HookGroups) Hooks(agent Agent, source string) []Hook {
@@ -83,9 +115,19 @@ func (groups HookGroups) Hooks(agent Agent, source string) []Hook {
 	for event, matchers := range groups {
 		for _, matcher := range matchers {
 			for _, handler := range matcher.Hooks {
-				hooks = append(hooks, Hook{Agent: agent, Source: source, Event: event, Command: handler.Command})
+				hooks = append(hooks, Hook{Agent: agent, Source: source, Event: event, Command: handler.HookCommand()})
 			}
 		}
 	}
 	return hooks
+}
+
+// FileEdit is a change to one configuration file that apply would write.
+type FileEdit struct {
+	Path string
+	// Before is the content the edit was computed from; nil when the file
+	// does not exist yet.
+	Before  []byte
+	After   []byte
+	Changes []string
 }

@@ -306,8 +306,8 @@ github.com/tklauser/go-sysconf v0.4.0 h1:7H0uAN+7RkwWRaxhYXDLqa5V3LPrJeV8wmD9dRU
 github.com/tklauser/go-sysconf v0.4.0/go.mod h1:8mTNWyog7H+MpKijp4VmKJAd2bbYQ2zuUwkYRbUArPI=
 github.com/tklauser/numcpus v0.12.0 h1:NR85qdvHA9pFse3x3weVZ0r0ST8R6l5RHbZrlRaqob4=
 github.com/tklauser/numcpus v0.12.0/go.mod h1:ABHeXzJnr/qqwguhClkZKT1/8VABcYrsyUiUGobwWJg=
-github.com/torturado/agentcfg v0.0.0-20261120064642-6fefcd7452a0 h1:5PL7DBgNb9DPqAOaGjG3hscwvpY3nXY5LaDMyP3ZGC0=
-github.com/torturado/agentcfg v0.0.0-20261120064642-6fefcd7452a0/go.mod h1:FxRTmE/yzsB6SeOwV/E6UzpqVlET6YTeuJfdfwXVyMc=
+github.com/torturado/agentcfg v0.0.0-20261120075836-fe529c81b56f h1:G4HvXaOBW75cEcXDFM0AqS0AtARfIAYxbQwLHS+YehY=
+github.com/torturado/agentcfg v0.0.0-20261120075836-fe529c81b56f/go.mod h1:FxRTmE/yzsB6SeOwV/E6UzpqVlET6YTeuJfdfwXVyMc=
 github.com/urfave/cli v1.20.0/go.mod h1:70zkFmudgCuE/ngEzBv17Jvp/497gISqfk5gWijbERA=
 github.com/urfave/cli v1.22.17 h1:SYzXoiPfQjHBbkYxbew5prZHS1TOLT3ierW8SYLqtVQ=
 github.com/urfave/cli v1.22.17/go.mod h1:b0ht0aqgH/6pBYzzxURyrM4xXNgsoT/n2ZzwQiEhNVo=

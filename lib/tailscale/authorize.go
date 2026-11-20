@@ -242,19 +242,10 @@ func (t *Tailnet) current(auth authorization) bool {
 // domain, whose key is valid and that holds CapSyncthing. Anything else is
 // refused.
 func authorizationFrom(who *apitype.WhoIsResponse, domain string, now time.Time) (authorization, error) {
-	n := who.Node
-	switch {
-	case domain == "":
-		return authorization{}, errors.New("our tailnet domain is unknown")
-	case n == nil || n.StableID == "":
-		return authorization{}, errors.New("whois returned no node")
-	case tailnetDomain(n.Name) != domain:
-		return authorization{}, fmt.Errorf("tailnet node %s belongs to another tailnet", n.Name)
-	case n.Expired || !n.KeyExpiry.IsZero() && !n.KeyExpiry.After(now):
-		return authorization{}, errors.New("tailnet node key has expired")
-	case !slices.Contains(n.Tags, PeerTag):
-		return authorization{}, errors.New("tailnet node is not tagged " + PeerTag)
+	if err := checkNode(who.Node, domain, now); err != nil {
+		return authorization{}, err
 	}
+	n := who.Node
 	if _, ok := who.CapMap[CapSyncthing]; !ok {
 		return authorization{}, errors.New("tailnet policy does not grant " + string(CapSyncthing))
 	}
@@ -274,6 +265,55 @@ func authorizationFrom(who *apitype.WhoIsResponse, domain string, now time.Time)
 		name, _, _ = strings.Cut(n.Name, ".")
 	}
 	return authorization{nodeID: n.StableID, name: name, folders: folders}, nil
+}
+
+// checkNode accepts a tagged node of our own tailnet, named in its domain,
+// whose key is valid.
+func checkNode(n *tailcfg.Node, domain string, now time.Time) error {
+	switch {
+	case domain == "":
+		return errors.New("our tailnet domain is unknown")
+	case n == nil || n.StableID == "":
+		return errors.New("whois returned no node")
+	case tailnetDomain(n.Name) != domain:
+		return fmt.Errorf("tailnet node %s belongs to another tailnet", n.Name)
+	case n.Expired || !n.KeyExpiry.IsZero() && !n.KeyExpiry.After(now):
+		return errors.New("tailnet node key has expired")
+	case !slices.Contains(n.Tags, PeerTag):
+		return errors.New("tailnet node is not tagged " + PeerTag)
+	}
+	return nil
+}
+
+// Capabilities returns the application capabilities that the tailnet policy
+// grants the node at remote towards this node, for services other than BEP
+// that authorize each request. The node must be a tagged node of our own
+// tailnet with a valid key, and remote must not be one of our addresses.
+func (t *Tailnet) Capabilities(ctx context.Context, remote netip.AddrPort) (tailcfg.PeerCapMap, error) {
+	ip := remote.Addr().Unmap()
+	t.mut.Lock()
+	self, domain := t.self, t.domain
+	t.mut.Unlock()
+	if !t.available() {
+		return nil, errTailnetUnavailable
+	}
+	if slices.Contains(self, ip) {
+		return nil, errors.New("request comes from one of our own tailnet addresses")
+	}
+	ctx, cancel := context.WithTimeout(ctx, whoisTimeout)
+	defer cancel()
+	who, err := t.api.WhoIs(ctx, netip.AddrPortFrom(ip, remote.Port()).String())
+	if err != nil {
+		return nil, fmt.Errorf("whois %s: %w", remote, err)
+	}
+	if err := checkNode(who.Node, domain, time.Now()); err != nil {
+		return nil, err
+	}
+	// The tailnet may have become unavailable while WhoIs was answered.
+	if !t.available() {
+		return nil, errTailnetUnavailable
+	}
+	return who.CapMap, nil
 }
 
 // addDevice adds an unknown device bound to its tailnet node, shared with

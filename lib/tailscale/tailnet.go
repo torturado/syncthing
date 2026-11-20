@@ -438,10 +438,13 @@ func (t *Tailnet) enabled() bool {
 }
 
 // inUse reports whether the configuration needs the tailnet: for discovery,
-// for auto-accept, for listening, or to keep checking devices that the
-// tailnet authorized.
+// for auto-accept, for listening, for the agentcfg fleet view, or to keep
+// checking devices that the tailnet authorized.
 func inUse(cfg config.Configuration) bool {
 	if cfg.Options.TailscaleDiscoveryEnabled || cfg.Options.TailscaleAutoAcceptDevices || cfg.Options.TailscaleListenOnly {
+		return true
+	}
+	if cfg.Options.AgentcfgEnabled && cfg.Options.AgentcfgFleetEnabled {
 		return true
 	}
 	return slices.ContainsFunc(cfg.Devices, func(dev config.DeviceConfiguration) bool {

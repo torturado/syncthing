@@ -58,6 +58,7 @@ const (
 	LoginAttempt
 	Failure
 	UpgradeRestartScheduled
+	AgentConfigChanged
 
 	AllEvents = (1 << iota) - 1
 )
@@ -137,6 +138,8 @@ func (t EventType) String() string {
 		return "Failure"
 	case UpgradeRestartScheduled:
 		return "UpgradeRestartScheduled"
+	case AgentConfigChanged:
+		return "AgentConfigChanged"
 	default:
 		return "Unknown"
 	}
@@ -226,6 +229,8 @@ func UnmarshalEventType(s string) EventType {
 		return Failure
 	case "UpgradeRestartScheduled":
 		return UpgradeRestartScheduled
+	case "AgentConfigChanged":
+		return AgentConfigChanged
 	default:
 		return 0
 	}

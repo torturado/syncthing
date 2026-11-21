@@ -70,6 +70,9 @@ mcp_servers.registry = { url = "https://registry.example.ts.net/mcp" }
 roles = ["build"]
 age_recipient = "age1..."                     # this machine may decrypt secrets.age
 hooks = { claude = ["python3 ~/.claude/hooks/gpu-guard.py"] }
+
+[sync.exclude]                                # files that stay on each machine
+agents = ["/skills/local-only"]                  # Syncthing ignore patterns, per synced folder
 ```
 
 A credential in the spec must be a reference such as `${NAME}`; the spec is rejected
@@ -79,6 +82,22 @@ variable can only pass through under its own name.
 
 A hook is named by its command followed by its arguments, as reported by `check`. Plugin
 hooks keep `${CLAUDE_PLUGIN_ROOT}` unexpanded, so the same name works on every machine.
+
+## Synced folders
+
+`SyncFolders` lists the folders of agent configuration that the machines of a fleet keep
+identical, with their Syncthing ignore patterns; the Syncthing fork shares them on its own.
+
+| Folder | Path | Synced |
+|---|---|---|
+| `agents` | `~/.agents` | Everything (skills, the spec, `secrets.age`), except `.git`, `node_modules` and Python caches. |
+| `claude` | `~/.claude` | `CLAUDE.md`, `settings.json`, `keybindings.json`, `agents/`, `commands/`, `output-styles/`, `rules/` and `themes/`. |
+| `codex` | `~/.codex` | `AGENTS.md`, `config.toml` and `rules/`. |
+
+Everything else in an agent's own directory, such as credentials, sessions, history, caches
+and databases, stays on each machine, including whatever a later version of the agent adds
+there. `[sync.exclude]` keeps more out of every machine; its patterns come first, so they win.
+They can only exclude: a pattern that starts with `!`, or a `#include` directive, is rejected.
 
 ## What `check` reports
 
@@ -179,6 +198,7 @@ report, err := agentcfg.Check(ctx, agentcfg.Options{SpecPath: path})
 plan, err := agentcfg.Plan(ctx, opts)    // what Apply would change
 result, err := agentcfg.Apply(ctx, opts)
 paths, err := agentcfg.WatchPaths(opts)  // files whose changes can change the result
+folders, err := agentcfg.SyncFolders(opts) // folders to sync and their ignore patterns
 ```
 
 ## Where it looks

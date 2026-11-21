@@ -229,6 +229,9 @@ func removeReport(f sharedFile) error {
 		return err
 	}
 	defer root.Close()
+	if err := checkReportsDir(root); err != nil {
+		return err
+	}
 	return root.Remove(f.name)
 }
 
@@ -268,8 +271,11 @@ func (s *Service) Fleet() ([]FleetMember, error) {
 		peers, err = readReports(folder.root, myID)
 	}
 	if err != nil {
-		if self.Error == "" {
+		switch {
+		case self.Error == "":
 			self.Error = err.Error()
+		case !strings.Contains(self.Error, err.Error()):
+			self.Error += "; " + err.Error()
 		}
 		return []FleetMember{self}, nil
 	}

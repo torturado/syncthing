@@ -3,8 +3,11 @@
 Status, 2026-11-20:
 - Phase A is implemented in agentcfg (PR torturado/agentcfg#1).
 - Phase B is implemented in the fork (PR torturado/syncthing#7).
-- Phase C and the per-machine parts of the A gates are pending: the checks on the six machines,
-  moving their credentials into `secrets.age`, and rotating the Coolify token.
+- The A gates are done on the six machines: credentials are in `secrets.age` and the Coolify
+  token is rotated.
+- The fixes found before enabling automatic apply are in agentcfg `v0.1.0` (PRs
+  torturado/agentcfg#2 and #3), which the fork requires since torturado/syncthing#8.
+- Phase C is rolled out on five machines; docker is pending (see C3).
 
 Deviations from this plan, kept on purpose:
 - Automatic apply needs an explicit `agentcfgSpecPath`. A spec that is only found in a shared
@@ -135,6 +138,38 @@ the fork binary through a systemd drop-in, so rolling back means removing the dr
 
 **C2. Order.** casa → portatil → aimery → dockerpapa → prox → docker. docker (production) goes
 last, and only after a week without incidents on the others.
+
+**C3. Rollout, 2026-11-20.** casa, portatil, aimery, dockerpapa and prox run the fork built from
+its `main` at `1c4268385` (`v2.1.8-dev.16`, `CGO_ENABLED=0 go run build.go -no-upgrade build
+syncthing`, so a static binary with modernc SQLite, as in the Debian package). The schema has not
+changed since 2.1.5, so the packaged binary can take the database back.
+- **Binary:** `~/.local/bin/syncthing-agentcfg` for the user units (casa, portatil, aimery),
+  `/usr/local/bin/syncthing-agentcfg` for `syncthing@root` (dockerpapa, prox, docker).
+- **Drop-in:** `agentcfg-fork.conf` in `~/.config/systemd/user/syncthing.service.d/` or
+  `/etc/systemd/system/syncthing@root.service.d/`:
+  ```ini
+  [Service]
+  ExecStart=
+  ExecStart=<binary> serve --no-browser --no-restart
+  # root units only: a system unit does not load environment.d
+  EnvironmentFile=-/root/.config/environment.d/agentcfg.conf
+  ```
+  Rolling back is removing the file, `daemon-reload` and restarting the unit.
+- **Options:** `agentcfgEnabled = true`, with `agentcfgApply` off and the fleet view off.
+- **CLI:** `agentcfg` `v0.1.0` at the same path as before.
+- **Checks passed:**
+  - every machine reports 0 errors and 0 warnings, and connects to all five peers;
+  - a file created and then deleted on casa reaches stock-Syncthing docker in 20 s;
+  - `herdr integration install claude` on portatil shows as an `undeclared-hook` error in
+    portatil's report within 3 s, `agentcfg apply` lists the removal, and uninstalling clears
+    the error within 3 s.
+- **Pending:**
+  - docker, on 2026-11-27 if the others have no incidents;
+  - the fleet view: tagging the six nodes `tag:syncthing` and casa also `tag:fleet-admin`, then
+    the `tailscaled`-stopped and fleet checks. The tailnet policy already has both tags'
+    owners and the grant from the threat model, and `agentcfgFleetEnabled` is on in the five
+    machines. Until the nodes are tagged, every listener answers 403 to casa and refuses
+    connections on the LAN address, which is the authorization check for an untagged node.
 
 ## Rules for keeping the fork cheap
 

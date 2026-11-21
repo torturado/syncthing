@@ -95,7 +95,10 @@ func TestFleetSharesReportsThroughTheSpecFolder(t *testing.T) {
 	peer := Status{Spec: "/home/peer/agentcfg.toml", Folder: "agents", Error: "peer error"}
 	bs, _ := json.Marshal(peer)
 	writeFile(t, env.reportPath(peerID), string(bs))
-	writeFile(t, env.reportPath(brokenID), "{not json")
+	// A report must be one JSON value and nothing after it.
+	writeFile(t, env.reportPath(brokenID), `{"spec": "x"} trailing`)
+	// Another spelling of a device ID is not a report.
+	writeFile(t, filepath.Join(filepath.Dir(own), strings.ToLower(peerID.String())+".json"), string(bs))
 	writeFile(t, filepath.Join(filepath.Dir(own), peerID.String()+".sync-conflict-20261121-120000-AAAAAAA.json"), string(bs))
 	writeFile(t, filepath.Join(filepath.Dir(own), "notes.json"), "{}")
 
@@ -130,6 +133,33 @@ func TestFleetSharesReportsThroughTheSpecFolder(t *testing.T) {
 		t.Errorf("shared report rewritten with the same result: checked at %v, then %v", first.Report.CheckedAt, again.Report.CheckedAt)
 	}
 
+	// While the spec is gone the report is withdrawn, and it comes back
+	// with the spec even though the result is the same as before.
+	rerun := func() {
+		t.Helper()
+		w, err := env.cfg.Modify(func(cfg *config.Configuration) { cfg.Options.AgentcfgIntervalS++ })
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Wait()
+	}
+	spec := filepath.Join(env.folder, SpecFileName)
+	if err := os.Remove(spec); err != nil {
+		t.Fatal(err)
+	}
+	rerun()
+	waitFor(t, "the report to be withdrawn with the spec", func() bool {
+		_, ok := sharedStatus(t, own)
+		return !ok
+	})
+	writeFile(t, spec, testSpec)
+	rerun()
+	waitFor(t, "the report to come back with the spec", func() bool {
+		st, ok := sharedStatus(t, own)
+		return ok && reportErrors(st) == 1
+	})
+	scans := env.scans.count("agents", ownSub)
+
 	// Turning the fleet view off withdraws this device's report, and only it.
 	w, err = env.cfg.Modify(func(cfg *config.Configuration) { cfg.Options.AgentcfgFleetEnabled = false })
 	if err != nil {
@@ -143,7 +173,7 @@ func TestFleetSharesReportsThroughTheSpecFolder(t *testing.T) {
 	if _, ok := sharedStatus(t, env.reportPath(peerID)); !ok {
 		t.Error("a peer's report was removed")
 	}
-	waitFor(t, "a scan of the removal", func() bool { return env.scans.count("agents", ownSub) == 2 })
+	waitFor(t, "a scan of the removal", func() bool { return env.scans.count("agents", ownSub) == scans+1 })
 	if _, err := env.svc.Fleet(); !errors.Is(err, errFleetDisabled) {
 		t.Errorf("Fleet while disabled: %v; want %v", err, errFleetDisabled)
 	}
@@ -155,17 +185,45 @@ func TestFleetDoesNotShareFromAReceiveOnlyFolder(t *testing.T) {
 		cfg.Folders[0].Type = config.FolderTypeReceiveOnly
 	})
 	writeFile(t, filepath.Join(env.folder, SpecFileName), testSpec)
+	writeFile(t, env.reportPath(peerID), `{"spec": "/home/peer/agentcfg.toml"}`)
 	env.start(t)
 	waitFor(t, "the first check", func() bool { return env.svc.Status().Report != nil })
 
+	// The others' reports are shown; this device says why it shares none.
 	fleet, err := env.svc.Fleet()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fleet) != 1 || !strings.Contains(fleet[0].Error, "receiveonly") {
-		t.Errorf("fleet = %+v; want only this device, saying why its report is not shared", fleet)
+	if len(fleet) != 2 || !strings.Contains(fleet[0].Error, "receive-only") || fleet[1].Status == nil {
+		t.Errorf("fleet = %+v; want this device saying why its report is not shared, then the peer", fleet)
 	}
 	if _, ok := sharedStatus(t, env.reportPath(protocol.LocalDeviceID)); ok {
 		t.Error("the report was written into a receive-only folder")
+	}
+}
+
+func TestFleetStaysInsideTheFolder(t *testing.T) {
+	env := newTestEnv(t, func(cfg *config.Configuration) { cfg.Options.AgentcfgFleetEnabled = true })
+	writeFile(t, filepath.Join(env.folder, SpecFileName), testSpec)
+	// Another device synced the reports directory as a symlink out of the
+	// folder.
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "reports"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(outside, "reports", peerID.String()+".json"), `{"spec": "outside"}`)
+	if err := os.Symlink(outside, filepath.Join(env.folder, ".agentcfg")); err != nil {
+		t.Fatal(err)
+	}
+	env.start(t)
+	waitFor(t, "the first check", func() bool { return env.svc.Status().Report != nil })
+
+	fleet, err := env.svc.Fleet()
+	if err == nil && (len(fleet) != 1 || fleet[0].Error == "") {
+		t.Errorf("fleet = %+v; want only this device, with the error that kept its report in", fleet)
+	}
+	entries, err := os.ReadDir(filepath.Join(outside, "reports"))
+	if err != nil || len(entries) != 1 {
+		t.Errorf("outside the folder: %v, %v; want only the file that was there", entries, err)
 	}
 }

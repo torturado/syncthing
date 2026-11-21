@@ -78,7 +78,7 @@
             <th translate>State</th>
             <th class="text-right" translate>Errors</th>
             <th class="text-right" translate>Warnings</th>
-            <th translate>Reported</th>
+            <th style="padding-left: 2em" translate>Reported</th>
           </tr>
         </thead>
         <tbody ng-repeat="member in agentcfg.fleet">
@@ -97,7 +97,7 @@
             </td>
             <td ng-if="member.status" class="text-right">{{member.status.report.errors}}</td>
             <td ng-if="member.status" class="text-right">{{member.status.report.warnings}}</td>
-            <td ng-if="member.status">{{member.status.report.checked_at | date:"yyyy-MM-dd HH:mm:ss"}}</td>
+            <td ng-if="member.status" style="padding-left: 2em">{{member.status.report.checked_at | date:"yyyy-MM-dd HH:mm:ss"}}</td>
           </tr>
           <tr ng-if="member.error && member.status">
             <td></td>

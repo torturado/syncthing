@@ -54,8 +54,11 @@ func Write(path string, before, data []byte, backupDir string) (string, error) {
 		if err := os.MkdirAll(backupDir, 0o700); err != nil {
 			return "", err
 		}
-		backup = filepath.Join(backupDir, strings.ReplaceAll(strings.TrimPrefix(target, "/"), "/", "%"))
-		if err := os.WriteFile(backup, current, 0o600); err != nil {
+		// One flat name per file: the path with its separators, and a Windows
+		// volume's colon, replaced.
+		name := strings.NewReplacer("/", "%", ":", "%").Replace(strings.TrimPrefix(filepath.ToSlash(target), "/"))
+		backup = filepath.Join(backupDir, name)
+		if err := os.WriteFile(backup, current, 0o600); err != nil { //nolint:gosec // name has no separators, so it stays in backupDir
 			return "", err
 		}
 	} else if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {

@@ -106,7 +106,8 @@ func readFile(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(bs)
+	// Syncthing writes .stignore with CRLF line endings on Windows.
+	return strings.ReplaceAll(string(bs), "\r\n", "\n")
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {

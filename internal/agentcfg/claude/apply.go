@@ -236,7 +236,7 @@ func editObject(path, key string, change func(json.RawMessage) (json.RawMessage,
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if len(changes) == 0 {
-		return nil, nil
+		return nil, nil //nolint:nilnil // no edit: the file already matches
 	}
 	trailingNewline := len(before) == 0 || before[len(before)-1] == '\n'
 	after, err := jsonedit.Format(doc.Set(key, value), trailingNewline)

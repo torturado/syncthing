@@ -71,7 +71,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "apply":
 		code, err = runApply(ctx, args[1:], home, stdout)
 	case "secrets":
-		code, err = runSecrets(args[1:], home, stdin, stdout)
+		err = runSecrets(args[1:], home, stdin, stdout)
 	default:
 		err = errors.New(usage)
 	}
@@ -188,26 +188,26 @@ func runApply(ctx context.Context, args []string, home string, stdout io.Writer)
 	return exitOK, nil
 }
 
-func runSecrets(args []string, home string, stdin io.Reader, stdout io.Writer) (int, error) {
+func runSecrets(args []string, home string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 {
-		return 0, errors.New(usage)
+		return errors.New(usage)
 	}
 	command, args := args[0], args[1:]
 	var name string
 	if command == "set" || command == "unset" {
 		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-			return 0, fmt.Errorf("secrets %s needs a variable name", command)
+			return fmt.Errorf("secrets %s needs a variable name", command)
 		}
 		name, args = args[0], args[1:]
 		if err := secrets.ValidateName(name); err != nil {
-			return 0, err
+			return err
 		}
 	}
 	f := newFlags("secrets "+command, home)
 	out := f.set.String("out", filepath.Join(xdgConfig(home), "environment.d", "agentcfg.conf"), "environment file written by sync")
 	create := f.set.Bool("create", false, "set: create the secrets file when it does not exist yet")
 	if err := f.set.Parse(args); err != nil {
-		return 0, err
+		return err
 	}
 	secretsPath := agentcfg.SecretsPath(*f.spec)
 
@@ -215,19 +215,19 @@ func runSecrets(args []string, home string, stdin io.Reader, stdout io.Writer) (
 	case "keygen":
 		recipient, err := secrets.Keygen(*f.identity)
 		if err != nil {
-			return 0, err
+			return err
 		}
 		fmt.Fprintf(stdout, "Identity written to %s.\nAdd this machine's public key to its [hosts] entry in the spec:\n\nage_recipient = %q\n", shorten(*f.identity, home), recipient)
-		return exitOK, nil
+		return nil
 
 	case "sync":
 		values, err := secrets.Load(secretsPath, *f.identity)
 		if err != nil {
-			return 0, err
+			return err
 		}
 		changed, err := secrets.Sync(values, *out)
 		if err != nil {
-			return 0, err
+			return err
 		}
 		names := slices.Sorted(maps.Keys(values))
 		state := "unchanged"
@@ -235,40 +235,40 @@ func runSecrets(args []string, home string, stdin io.Reader, stdout io.Writer) (
 			state = "written"
 		}
 		fmt.Fprintf(stdout, "%s %s: %s\n", shorten(*out, home), state, strings.Join(names, ", "))
-		return exitOK, nil
+		return nil
 
 	case "set", "unset", "rekey":
 		file, err := spec.Load(*f.spec)
 		if err != nil {
-			return 0, fmt.Errorf("spec: %w", err)
+			return fmt.Errorf("spec: %w", err)
 		}
 		// The value is read first, so the file is loaded, or found missing,
 		// just before it is written.
 		var value string
 		if command == "set" {
 			if value, err = readValue(stdin); err != nil {
-				return 0, err
+				return err
 			}
 			if err := secrets.ValidateValue(name, value); err != nil {
-				return 0, err
+				return err
 			}
 		}
 		_, statErr := os.Stat(secretsPath)
 		missing := errors.Is(statErr, fs.ErrNotExist)
 		if statErr != nil && !missing {
-			return 0, statErr
+			return statErr
 		}
 		var values secrets.Values
 		switch {
 		case missing && command == "set" && *create:
 			values = secrets.Values{}
 		case missing:
-			return 0, fmt.Errorf("%s does not exist; wait for it to sync, or pass --create to set for the fleet's first secret", shorten(secretsPath, home))
+			return fmt.Errorf("%s does not exist; wait for it to sync, or pass --create to set for the fleet's first secret", shorten(secretsPath, home))
 		case command == "set" && *create:
-			return 0, fmt.Errorf("%s already exists; set without --create", shorten(secretsPath, home))
+			return fmt.Errorf("%s already exists; set without --create", shorten(secretsPath, home))
 		default:
 			if values, err = secrets.Load(secretsPath, *f.identity); err != nil {
-				return 0, err
+				return err
 			}
 		}
 		switch command {
@@ -276,18 +276,18 @@ func runSecrets(args []string, home string, stdin io.Reader, stdout io.Writer) (
 			values[name] = value
 		case "unset":
 			if _, ok := values[name]; !ok {
-				return 0, fmt.Errorf("%s is not in %s", name, shorten(secretsPath, home))
+				return fmt.Errorf("%s is not in %s", name, shorten(secretsPath, home))
 			}
 			delete(values, name)
 		}
 		recipients := file.Recipients()
 		if err := secrets.Save(secretsPath, values, recipients, missing); err != nil {
-			return 0, err
+			return err
 		}
 		fmt.Fprintf(stdout, "%s encrypted to %d machines. Run agentcfg secrets sync on each one.\n", shorten(secretsPath, home), len(recipients))
-		return exitOK, nil
+		return nil
 	}
-	return 0, errors.New(usage)
+	return errors.New(usage)
 }
 
 // readValue reads one line, so a value can be piped or typed without it

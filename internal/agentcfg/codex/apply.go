@@ -113,7 +113,8 @@ func planConfig(path string, desired spec.Spec, allowed func(string) bool) (*mod
 			return len(key) > 1 && key[0] == "mcp_servers" && slices.Contains(replace, key[1])
 		}, replacement.String())
 		for _, name := range update {
-			existing, wanted := current[name].(map[string]any), want[name].decoded.(map[string]any)
+			existing, _ := current[name].(map[string]any)
+			wanted, _ := want[name].decoded.(map[string]any)
 			// An owned key that already has the spec's value keeps its line,
 			// and the comment on it.
 			unchanged := func(key string) bool {
@@ -136,7 +137,7 @@ func planConfig(path string, desired spec.Spec, allowed func(string) bool) (*mod
 					merged[key] = value
 				}
 			}
-			maps.Copy(merged, want[name].decoded.(map[string]any))
+			maps.Copy(merged, wanted)
 			expectedServers[name] = merged
 		}
 		setOrDelete(expected, "mcp_servers", expectedServers)
@@ -173,7 +174,7 @@ func planConfig(path string, desired spec.Spec, allowed func(string) bool) (*mod
 		setOrDelete(expectedHooks, event, decodedHooks[event])
 	}
 	if len(changes) == 0 {
-		return nil, nil
+		return nil, nil //nolint:nilnil // no edit: the file already matches
 	}
 	if hooks != nil {
 		setOrDelete(expected, "hooks", expectedHooks)
@@ -187,7 +188,7 @@ func planConfig(path string, desired spec.Spec, allowed func(string) bool) (*mod
 		return nil, fmt.Errorf("rewrite produced invalid TOML: %w", err)
 	}
 	if !reflect.DeepEqual(normalize(result), normalize(expected)) {
-		return nil, fmt.Errorf("mcp_servers or hooks are written in a form apply cannot rewrite safely; move them into [mcp_servers.<name>] and [[hooks.<event>]] tables")
+		return nil, errors.New("mcp_servers or hooks are written in a form apply cannot rewrite safely; move them into [mcp_servers.<name>] and [[hooks.<event>]] tables")
 	}
 	return &model.FileEdit{Path: path, Before: before, After: []byte(text), Changes: changes}, nil
 }
@@ -220,7 +221,8 @@ func renderServers(desired spec.Spec) (map[string]renderedServer, error) {
 		if _, err := toml.Decode(text, &decoded); err != nil {
 			return nil, err
 		}
-		servers[name] = renderedServer{decoded["mcp_servers"].(map[string]any)[name], text, lines}
+		decodedServers, _ := decoded["mcp_servers"].(map[string]any)
+		servers[name] = renderedServer{decodedServers[name], text, lines}
 	}
 	return servers, nil
 }
@@ -415,7 +417,7 @@ func bracketDepth(line string) int {
 func filterEvent(raw any, allowed func(string) bool) ([]map[string]any, []string, error) {
 	groups, ok := raw.([]map[string]any)
 	if !ok {
-		return nil, nil, fmt.Errorf("not an array of tables")
+		return nil, nil, errors.New("not an array of tables")
 	}
 	var kept []map[string]any
 	var removed []string

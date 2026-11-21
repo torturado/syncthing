@@ -43,7 +43,10 @@ func copyHome(t *testing.T, fixture string) string {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(dst, []byte(strings.ReplaceAll(string(data), "@HOME@", home)), 0o644)
+		// @HOME@ sits inside JSON strings, where a Windows path's backslashes
+		// must be escaped.
+		jsonHome := strings.ReplaceAll(home, `\`, `\\`)
+		return os.WriteFile(dst, []byte(strings.ReplaceAll(string(data), "@HOME@", jsonHome)), 0o644)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -435,7 +438,13 @@ func TestSecretsLiveNextToTheSpecALinkPointsTo(t *testing.T) {
 	if err := os.Symlink(spec, link); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := agentcfg.SecretsPath(link), filepath.Join(synced, "secrets.age"); got != want {
+	// The temporary directory may itself be reached through a link, such as
+	// /var on macOS, or a short name on Windows.
+	resolved, err := filepath.EvalSymlinks(synced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := agentcfg.SecretsPath(link), filepath.Join(resolved, "secrets.age"); got != want {
 		t.Errorf("SecretsPath = %s, want %s", got, want)
 	}
 }

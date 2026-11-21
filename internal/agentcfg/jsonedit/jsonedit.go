@@ -12,7 +12,7 @@ package jsonedit
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"reflect"
 )
 
@@ -27,7 +27,7 @@ type Object []Member
 func Parse(data []byte) (Object, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
-		return nil, fmt.Errorf("not a JSON object")
+		return nil, errors.New("not a JSON object")
 	}
 	obj := Object{}
 	for dec.More() {
@@ -39,13 +39,15 @@ func Parse(data []byte) (Object, error) {
 		if err := dec.Decode(&value); err != nil {
 			return nil, err
 		}
-		obj = obj.Set(token.(string), value)
+		// Inside an object, the decoder returns each key as a string.
+		key, _ := token.(string)
+		obj = obj.Set(key, value)
 	}
 	if _, err := dec.Token(); err != nil {
 		return nil, err
 	}
 	if _, err := dec.Token(); err == nil {
-		return nil, fmt.Errorf("data after the JSON object")
+		return nil, errors.New("data after the JSON object")
 	}
 	return obj, nil
 }

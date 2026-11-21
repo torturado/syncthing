@@ -369,8 +369,11 @@ func TestAddressReuseKeepsBindings(t *testing.T) {
 
 	// Once the peer table agrees that the address belongs to n5, the old
 	// binding is refused from it and the new node's device can enroll.
+	// It took the address just before now: a connection opened at the same
+	// instant, which Windows' clock can report for two calls in a row, would
+	// not count as later.
 	tn.mut.Lock()
-	tn.peers = map[tailcfg.StableNodeID]*peer{"n5": {addrs: []netip.Addr{netip.MustParseAddr("100.64.0.2")}, since: time.Now()}}
+	tn.peers = map[tailcfg.StableNodeID]*peer{"n5": {addrs: []netip.Addr{netip.MustParseAddr("100.64.0.2")}, since: time.Now().Add(-time.Millisecond)}}
 	tn.mut.Unlock()
 	// A connection opened before the table learned of n5, for instance one
 	// whose handshake spanned the hand-over, may have come from the

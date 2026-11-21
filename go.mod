@@ -5,7 +5,9 @@ go 1.26.2
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
 	buf.build/go/protovalidate v1.4.0
+	filippo.io/age v1.3.1
 	github.com/AudriusButkevicius/recli v0.0.7
+	github.com/BurntSushi/toml v1.6.0
 	github.com/alecthomas/kong v1.16.1
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/calmh/incontainer v1.0.0
@@ -38,7 +40,6 @@ require (
 	github.com/syncthing/notify v0.0.0-20250528144937-c7027d4f7465
 	github.com/syndtr/goleveldb v1.0.1-0.20220721030215-126854af5e6d
 	github.com/thejerf/suture/v4 v4.0.6
-	github.com/torturado/agentcfg v0.2.0
 	github.com/urfave/cli v1.22.17
 	github.com/vitrun/qart v0.0.0-20160531060029-bf64b92db6b0
 	github.com/willabides/kongplete v0.4.0
@@ -58,11 +59,9 @@ require (
 require (
 	cel.dev/cel-go v0.32.0 // indirect
 	cel.dev/expr v0.25.3 // indirect
-	filippo.io/age v1.3.1 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/Azure/go-ntlmssp v0.1.1 // indirect
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect

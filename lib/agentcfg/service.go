@@ -4,7 +4,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this file,
 // You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Package agentcfg runs github.com/torturado/agentcfg inside Syncthing: it
+// Package agentcfg runs internal/agentcfg inside Syncthing: it
 // shares the directories of the AI coding agents' configuration with the
 // devices marked for it, checks that configuration against a spec that
 // travels in one of them, corrects it when asked to, and serves the report
@@ -29,8 +29,8 @@ import (
 	"time"
 
 	"github.com/thejerf/suture/v4"
-	agentcfglib "github.com/torturado/agentcfg"
 
+	agentcfglib "github.com/syncthing/syncthing/internal/agentcfg"
 	"github.com/syncthing/syncthing/internal/db"
 	"github.com/syncthing/syncthing/internal/slogutil"
 	"github.com/syncthing/syncthing/lib/config"

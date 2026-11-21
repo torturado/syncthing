@@ -37,6 +37,9 @@ type DeviceConfiguration struct {
 	RemoteGUIPort            int               `json:"remoteGUIPort" xml:"remoteGUIPort"`
 	RawNumConnections        int               `json:"numConnections" xml:"numConnections"`
 	Group                    string            `json:"group" xml:"group,attr,omitempty"`
+	// AgentcfgSync shares the folders of AI agent configuration that
+	// lib/agentcfg keeps with this device. Never set on an untrusted device.
+	AgentcfgSync bool `json:"agentcfgSync" xml:"agentcfgSync,attr,omitempty"`
 	// Set on devices that were added because the tailnet authorized them:
 	// the StableNodeID of their tailnet node and the folders the grant
 	// lists. Such a device is only allowed to connect from that node, while
@@ -85,7 +88,7 @@ func (cfg *DeviceConfiguration) prepare(sharedFolders []string) {
 	}
 
 	// A device cannot be simultaneously untrusted and an introducer, nor
-	// auto accept folders.
+	// auto accept folders, nor sync agent configuration.
 	if cfg.Untrusted {
 		if cfg.Introducer {
 			slog.Warn("Device is both untrusted and an introducer, removing introducer flag", cfg.DeviceID.LogAttr())
@@ -94,6 +97,10 @@ func (cfg *DeviceConfiguration) prepare(sharedFolders []string) {
 		if cfg.AutoAcceptFolders {
 			slog.Warn("Device is both untrusted and auto-accepting folders, removing auto-accept flag", cfg.DeviceID.LogAttr())
 			cfg.AutoAcceptFolders = false
+		}
+		if cfg.AgentcfgSync {
+			slog.Warn("Device is both untrusted and syncing agent configuration, removing the agent configuration flag", cfg.DeviceID.LogAttr())
+			cfg.AgentcfgSync = false
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -51,6 +52,8 @@ func newTestEnv(t *testing.T, mutate func(*config.Configuration)) *testEnv {
 	cfg := config.New(protocol.LocalDeviceID)
 	cfg.Folders = []config.FolderConfiguration{{ID: "agents", Path: env.folder, FilesystemType: config.FilesystemTypeBasic}}
 	cfg.Options.AgentcfgEnabled = true
+	// The fleet view is on by default; the tests that need it turn it on.
+	cfg.Options.AgentcfgFleetEnabled = false
 	cfg.Options.AgentcfgIntervalS = 3600
 	if mutate != nil {
 		mutate(&cfg)
@@ -190,11 +193,16 @@ func TestChecksFollowSpecAndAgentFiles(t *testing.T) {
 	defer sub.Unsubscribe()
 	spec := filepath.Join(env.folder, SpecFileName)
 
-	// No spec in the folder yet: the status says so.
+	// No spec in the folder yet: nothing to check, and nothing wrong.
 	env.start(t)
-	waitFor(t, "the missing spec to be reported", func() bool {
-		return strings.Contains(env.svc.Status().Error, "no shared folder")
+	waitFor(t, "the first check", func() bool {
+		env.svc.runMut.Lock()
+		defer env.svc.runMut.Unlock()
+		return env.svc.stamps != nil
 	})
+	if st := env.svc.Status(); st.Error != "" || st.Report != nil {
+		t.Errorf("status without a spec = %+v; want neither an error nor a report", st)
+	}
 
 	// Syncthing pulls a spec into the folder.
 	writeFile(t, spec, testSpec)
@@ -216,8 +224,8 @@ func TestChecksFollowSpecAndAgentFiles(t *testing.T) {
 		ev := <-sub.C()
 		changes = append(changes, ev.Data.(map[string]any))
 	}
-	if len(changes) != 3 || changes[1]["errors"] != 1 || changes[2]["ok"] != true {
-		t.Errorf("AgentConfigChanged events = %v; want missing spec, one error, ok", changes)
+	if len(changes) != 2 || changes[0]["errors"] != 1 || changes[1]["ok"] != true {
+		t.Errorf("AgentConfigChanged events = %v; want one error, then ok", changes)
 	}
 }
 
@@ -304,5 +312,126 @@ func TestDisablingStopsChecks(t *testing.T) {
 	time.Sleep(debounceQuiet + time.Second)
 	if n := env.runs.Load(); n != runs {
 		t.Errorf("%d runs while disabled", n-runs)
+	}
+}
+
+// keptFolders returns the folders of agent configuration in the
+// configuration, by ID.
+func (env *testEnv) keptFolders() map[string]config.FolderConfiguration {
+	folders := map[string]config.FolderConfiguration{}
+	for _, f := range env.cfg.FolderList() {
+		if strings.HasPrefix(f.ID, SyncFolderPrefix) {
+			folders[f.ID] = f
+		}
+	}
+	return folders
+}
+
+func (env *testEnv) markPeer(t *testing.T, sync bool) {
+	t.Helper()
+	w, err := env.cfg.Modify(func(cfg *config.Configuration) {
+		cfg.SetDevice(config.DeviceConfiguration{DeviceID: peerID, Name: "peer", AgentcfgSync: sync})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Wait()
+}
+
+func TestAgentFoldersAreSharedWithTheMarkedDevices(t *testing.T) {
+	env := newTestEnv(t, func(cfg *config.Configuration) {
+		// An unmarked device shares nothing.
+		cfg.Devices = append(cfg.Devices, config.DeviceConfiguration{DeviceID: brokenID, Name: "other"})
+	})
+	writeFile(t, filepath.Join(env.home, ".claude", "settings.json"), "{}")
+	writeFile(t, filepath.Join(env.folder, SpecFileName), testSpec+"\n[sync.exclude]\nagents = [\"/skills/local\"]\n")
+	env.start(t)
+	waitFor(t, "the first check", func() bool { return env.svc.Status().Report != nil })
+	if kept := env.keptFolders(); len(kept) != 0 {
+		t.Fatalf("folders %v kept while no device is marked", kept)
+	}
+
+	env.markPeer(t, true)
+	waitFor(t, "the three folders", func() bool { return len(env.keptFolders()) == 3 })
+	kept := env.keptFolders()
+	for id, path := range map[string]string{"agentcfg-agents": ".agents", "agentcfg-claude": ".claude", "agentcfg-codex": ".codex"} {
+		f := kept[id]
+		if f.Path != filepath.Join(env.home, path) || f.Type != config.FolderTypeSendReceive || !slices.Equal(f.DeviceIDs(), []protocol.DeviceID{peerID, protocol.LocalDeviceID}) {
+			t.Errorf("%s = %s at %s with %v; want send-receive at ~/%s with this device and the peer", id, f.Type, f.Path, f.DeviceIDs(), path)
+		}
+	}
+	// Only the configuration in an agent's own directory is shared, and the
+	// spec's exclusions come first.
+	claude := readFile(t, filepath.Join(env.home, ".claude", ".stignore"))
+	if !strings.Contains(claude, "!/settings.json\n") || !strings.HasSuffix(claude, "\n/*\n") {
+		t.Errorf("~/.claude/.stignore = %q; want settings.json and nothing else", claude)
+	}
+	if agents := readFile(t, filepath.Join(env.home, ".agents", ".stignore")); !strings.Contains(agents, "/skills/local\n**/.git") {
+		t.Errorf("~/.agents/.stignore = %q; want the spec's exclusion first", agents)
+	}
+
+	// A new exclusion reaches the folder, which rescans.
+	writeFile(t, filepath.Join(env.folder, SpecFileName), testSpec+"\n[sync.exclude]\nagents = [\"/skills/local\", \"/notes\"]\n")
+	env.evLogger.Log(events.ItemFinished, map[string]any{"folder": "agents", "item": SpecFileName, "action": "update"})
+	waitFor(t, "the new exclusion", func() bool {
+		return strings.Contains(readFile(t, filepath.Join(env.home, ".agents", ".stignore")), "/notes\n") && env.scans.count("agentcfg-agents", "") > 0
+	})
+
+	// Unmarking the device stops the sharing and leaves the files.
+	env.markPeer(t, false)
+	waitFor(t, "the folders to go", func() bool { return len(env.keptFolders()) == 0 })
+	if got := readFile(t, filepath.Join(env.home, ".claude", "settings.json")); got != "{}" {
+		t.Errorf("settings.json = %q after the folder went; want it untouched", got)
+	}
+}
+
+func TestAgentFolderTakenByAnotherFolderIsReported(t *testing.T) {
+	var codex string
+	env := newTestEnv(t, func(cfg *config.Configuration) {
+		cfg.Devices = append(cfg.Devices, config.DeviceConfiguration{DeviceID: peerID, AgentcfgSync: true})
+	})
+	codex = filepath.Join(env.home, ".codex")
+	w, err := env.cfg.Modify(func(cfg *config.Configuration) {
+		cfg.SetFolder(config.FolderConfiguration{ID: "codex-config", Path: codex, FilesystemType: config.FilesystemTypeBasic})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Wait()
+	env.start(t)
+	waitFor(t, "the other two folders", func() bool { return len(env.keptFolders()) == 2 })
+	if _, ok := env.keptFolders()["agentcfg-codex"]; ok {
+		t.Error("~/.codex kept as a second folder")
+	}
+	waitFor(t, "the reason", func() bool { return strings.Contains(env.svc.Status().SyncError, `"codex-config"`) })
+}
+
+func TestJoiningDeviceYieldsToTheOthers(t *testing.T) {
+	env := newTestEnv(t, func(cfg *config.Configuration) {
+		cfg.Devices = append(cfg.Devices, config.DeviceConfiguration{DeviceID: peerID, AgentcfgSync: true})
+	})
+	settings := filepath.Join(env.home, ".claude", "settings.json")
+	credentials := filepath.Join(env.home, ".claude", ".credentials.json")
+	ownCodex := filepath.Join(env.home, ".codex", "config.toml")
+	for _, path := range []string{settings, credentials, ownCodex} {
+		writeFile(t, path, "{}")
+	}
+	// The peer already shares Claude Code's folder, but not Codex's.
+	env.scans.offer(peerID, "agentcfg-claude")
+	env.start(t)
+	waitFor(t, "the folders", func() bool { return len(env.keptFolders()) == 3 })
+
+	mtime := func(path string) time.Time {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.ModTime()
+	}
+	if !mtime(settings).Equal(time.Unix(0, 0)) {
+		t.Errorf("settings.json modified at %v; want the epoch, so the peer's copy wins", mtime(settings))
+	}
+	if mtime(credentials).Equal(time.Unix(0, 0)) || mtime(ownCodex).Equal(time.Unix(0, 0)) {
+		t.Error("a file that is not synced, or of a folder this device starts, lost its time")
 	}
 }

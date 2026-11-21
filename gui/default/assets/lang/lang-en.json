@@ -565,5 +565,6 @@
     "unknown device": "unknown device",
     "{%device%} wants to share folder \"{%folder%}\".": "{{device}} wants to share folder \"{{folder}}\".",
     "{%device%} wants to share folder \"{%folderlabel%}\" ({%folder%}).": "{{device}} wants to share folder \"{{folderlabel}}\" ({{folder}}).",
+    "{%device%} wants to sync the AI agents' configuration with this device.": "{{device}} wants to sync the AI agents' configuration with this device.",
     "{%reintroducer%} might reintroduce this device.": "{{reintroducer}} might reintroduce this device."
 }

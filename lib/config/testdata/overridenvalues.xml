@@ -32,6 +32,8 @@
         <urAccepted>4</urAccepted>
         <urInitialDelayS>800</urInitialDelayS>
         <releasesURL>https://localhost/releases</releasesURL>
+        <agentcfgEnabled>false</agentcfgEnabled>
+        <agentcfgFleetEnabled>false</agentcfgFleetEnabled>
         <overwriteRemoteDeviceNamesOnConnect>true</overwriteRemoteDeviceNamesOnConnect>
         <tempIndexMinBlocks>100</tempIndexMinBlocks>
         <setLowPriority>false</setLowPriority>

@@ -98,9 +98,10 @@ type OptionsConfiguration struct {
 	// used, and nothing listens while there is no tailnet address.
 	TailscaleListenOnly bool `json:"tailscaleListenOnly" xml:"tailscaleListenOnly" default:"false"`
 
-	// Check the configuration of the AI coding agents on this device
-	// against an agentcfg spec. See lib/agentcfg.
-	AgentcfgEnabled bool `json:"agentcfgEnabled" xml:"agentcfgEnabled" default:"false"`
+	// Share the folders of the AI coding agents' configuration with the
+	// devices marked agentcfgSync, and check that configuration against an
+	// agentcfg spec. See lib/agentcfg.
+	AgentcfgEnabled bool `json:"agentcfgEnabled" xml:"agentcfgEnabled" default:"true"`
 	// The spec to check against. Empty means agentcfg.toml at the root of
 	// the one shared folder that holds it.
 	AgentcfgSpecPath string `json:"agentcfgSpecPath" xml:"agentcfgSpecPath"`
@@ -113,7 +114,7 @@ type OptionsConfiguration struct {
 	// Share this device's report with the other devices of the folder that
 	// holds the spec, as .agentcfg/reports/<device ID>.json, and show
 	// theirs. See docs/tailscale/agentcfg-threat-model.md.
-	AgentcfgFleetEnabled bool `json:"agentcfgFleetEnabled" xml:"agentcfgFleetEnabled" default:"false"`
+	AgentcfgFleetEnabled bool `json:"agentcfgFleetEnabled" xml:"agentcfgFleetEnabled" default:"true"`
 
 	// Legacy deprecated
 	DeprecatedUPnPEnabled        bool     `json:"-" xml:"upnpEnabled,omitempty"`        // Deprecated: Do not use.

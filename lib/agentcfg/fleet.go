@@ -274,7 +274,7 @@ func (s *Service) Fleet() ([]FleetMember, error) {
 		switch {
 		case self.Error == "":
 			self.Error = err.Error()
-		case !strings.Contains(self.Error, err.Error()):
+		case self.Error != err.Error():
 			self.Error += "; " + err.Error()
 		}
 		return []FleetMember{self}, nil

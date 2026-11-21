@@ -107,7 +107,7 @@ Out of scope:
 | F1b. A receive-encrypted device of that folder. | It stores the reports encrypted and cannot read them. | Syncthing's untrusted-device encryption. |
 | F1c. A device that does not share the folder, a tailnet node or a LAN host. | It gets nothing: reports travel only as files of the folder, and nothing listens for them. | A4, A5. |
 | F1d. A device leaves the folder. | It keeps the copies it already received; it gets no new ones. Treat a report as readable by every device that ever shared the folder. | Trust assumptions. |
-| F1e. A device of the folder syncs `.agentcfg` or `.agentcfg/reports` as a symlink. | Writing and reading the reports fail with an error instead of following it, even to a place inside the folder, where Syncthing would not sync the report. | A4. |
+| F1e. A device of the folder syncs `.agentcfg` or `.agentcfg/reports` as a symlink. | Writing and reading the reports fail with an error instead of following it, even to a place inside the folder, where Syncthing would not sync the report. **Residual:** the check and the operation are separate calls, so a symlink swapped in between can redirect them to a file of the same name elsewhere in the folder, never outside it. | A4. |
 
 ### F2. Outages
 

@@ -231,8 +231,40 @@
           </div>
         </div>
 
+        <!-- Panel: Agent configuration offered -->
+        <div ng-if="agentcfgEnabled()" ng-repeat="deviceID in agentcfgSyncOffers()" class="row">
+          <div class="col-md-12">
+            <div class="panel panel-warning">
+              <div class="panel-heading">
+                <h3 class="panel-title">
+                  <div class="panel-icon">
+                    <span class="fas fa-terminal"></span>
+                  </div>
+                  <span translate>Agent Configuration</span>
+                </h3>
+              </div>
+              <div class="panel-body">
+                <p>
+                  <span translate translate-value-device="{{ deviceName(devices[deviceID]) }}">{%device%} wants to sync the AI agents' configuration with this device.</span>
+                  <span translate>Where a file differs, the other devices' copy is kept, and this device's is saved next to it as a conflict copy.</span>
+                </p>
+              </div>
+              <div class="panel-footer clearfix">
+                <div class="pull-right">
+                  <button type="button" class="btn btn-sm btn-success" ng-click="agentcfgSyncWith(deviceID)">
+                    <span class="fas fa-check"></span>&nbsp;<span translate>Sync</span>
+                  </button>
+                  <button type="button" class="btn btn-sm btn-default" ng-click="agentcfgDismissOffer(deviceID)" tooltip data-original-title="{{'This notification will reappear if the device connects again.' | translate}}">
+                    <span class="far fa-clock"></span>&nbsp;<span translate>Dismiss</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Panel: New Folder -->
-        <div ng-repeat="(folderID, pendingFolder) in pendingFolders">
+        <div ng-repeat="(folderID, pendingFolder) in pendingFolders" ng-if="!(agentcfgEnabled() && isAgentcfgSyncFolder(folderID))">
           <div ng-repeat="(deviceID, offeringDevice) in pendingFolder.offeredBy" class="row reject">
             <div class="col-md-12">
               <div class="panel panel-warning">
@@ -312,7 +344,7 @@
 
       <!-- Panel: Agent configuration drift -->
 
-      <div ng-if="agentcfgEnabled() && (agentcfgState(agentcfg.status) == 'drift' || agentcfgState(agentcfg.status) == 'error')" class="row">
+      <div ng-if="agentcfgEnabled() && (agentcfgSummary(agentcfg.status) == 'drift' || agentcfgSummary(agentcfg.status) == 'error')" class="row">
         <div class="col-md-12">
           <div class="panel panel-warning">
             <div class="panel-heading">
@@ -325,7 +357,8 @@
             </div>
             <div class="panel-body">
               <p ng-if="agentcfgState(agentcfg.status) == 'drift'"><span translate>The AI coding agents on this device differ from the spec.</span> {{agentcfg.status.report.errors}} <span translate>errors</span></p>
-              <p ng-if="agentcfgState(agentcfg.status) == 'error'">{{agentcfg.status.error}}</p>
+              <p ng-if="agentcfg.status.error">{{agentcfg.status.error}}</p>
+              <p ng-if="agentcfg.status.syncError">{{agentcfg.status.syncError}}</p>
             </div>
             <div class="panel-footer">
               <button type="button" class="btn btn-sm btn-default pull-right" ng-click="showAgentcfg()">
@@ -788,10 +821,11 @@
                     <tr ng-if="agentcfgEnabled()">
                       <th><span class="fas fa-fw fa-terminal"></span>&nbsp;<span translate>Agent Configuration</span></th>
                       <td class="text-right">
-                        <a href="" ng-click="showAgentcfg()" ng-switch="agentcfgState(agentcfg.status)">
+                        <a href="" ng-click="showAgentcfg()" ng-switch="agentcfgSummary(agentcfg.status)">
                           <span ng-switch-when="ok" class="text-success" translate>In Sync</span>
                           <span ng-switch-when="drift" class="text-danger">{{agentcfg.status.report.errors}} <span translate>errors</span></span>
                           <span ng-switch-when="error" class="text-danger" translate>Error</span>
+                          <span ng-switch-when="nospec" class="text-muted" translate>No Spec</span>
                           <span ng-switch-default translate>Not checked yet.</span>
                         </a>
                       </td>

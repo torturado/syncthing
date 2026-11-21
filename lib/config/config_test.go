@@ -78,6 +78,8 @@ func TestDefaultValues(t *testing.T) {
 			URURL:                     "https://data.syncthing.net/newdata",
 			URInitialDelayS:           1800,
 			ReleasesURL:               "https://upgrades.syncthing.net/meta.json",
+			AgentcfgEnabled:           true,
+			AgentcfgFleetEnabled:      true,
 			AlwaysLocalNets:           []string{},
 			OverwriteRemoteDevNames:   false,
 			TempIndexMinBlocks:        10,

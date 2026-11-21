@@ -1,8 +1,9 @@
 # agentcfg in Syncthing: threat model addendum
 
-This addendum covers the agentcfg integration: a service that checks the
-configuration of the AI coding agents on a device against a spec, can correct
-it, and can show the reports of the devices that share the spec's folder. It
+This addendum covers the agentcfg integration: a service that shares the
+folders of the AI coding agents' configuration with the devices marked for it,
+checks that configuration against a spec, can correct it, and can show the
+reports of the devices that share the spec's folder. It
 uses no part of the Tailscale integration; it sits next to
 [threat-model.md](threat-model.md) because both are fork additions with the
 same conventions. Every later change must keep the behaviour described here.
@@ -11,11 +12,15 @@ that proves it.
 
 ## Scope
 
-All options are off by default.
+`agentcfgEnabled` and `agentcfgFleetEnabled` are on by default, and
+`agentcfgSync` is off on every device. On their own, the two options read,
+report, and write this device's report into a folder that already holds the
+spec. Nothing is shared with another device until the owner marks that device.
 
 | Option | Feature |
 |---|---|
-| `agentcfgEnabled` | Check the agents' configuration in the home directory of the user that runs Syncthing against a spec, on triggers and every `agentcfgIntervalS` seconds. Show the report in the GUI and REST API. |
+| `agentcfgEnabled` | Check the agents' configuration in the home directory of the user that runs Syncthing against a spec, on triggers and every `agentcfgIntervalS` seconds. Show the report in the GUI and REST API. Keep the folders of agent configuration for the devices marked `agentcfgSync`. |
+| `agentcfgSync` (per device) | Share the folders of agent configuration with that device (A6). The GUI shows it as "Sync AI Agent Configuration" on the device, and offers it when a device shares those folders with this one. |
 | `agentcfgSpecPath` | The spec. Empty means `agentcfg.toml` at the root of the one shared folder that holds it. |
 | `agentcfgApply` | `auto` writes the spec whenever the configuration drifts; `off` only reports. |
 | `agentcfgFleetEnabled` | Share this device's report with the other devices of the folder that holds the spec, as `.agentcfg/reports/<device ID>.json`, and show the reports they shared in the GUI. Requires `agentcfgEnabled`. |
@@ -34,7 +39,11 @@ Out of scope:
    `~/.claude.json`, `~/.mcp.json` (or the file it links to),
    `~/.claude/settings.json`, `~/.codex/config.toml` and `~/.codex/hooks.json`. An MCP server entry names a command that the agent
    runs, so writing these files is equivalent to running code as that user.
-2. The report: MCP server names, URLs and commands, hook commands, plugin
+2. The folders of agent configuration: `~/.agents`, with the skills, the
+   spec, `secrets.age` and the reports, and the configuration entries of
+   `~/.claude` and `~/.codex` (A6). Skills, hooks and MCP servers in them run
+   as that user, so writing these folders is also equivalent to running code.
+3. The report: MCP server names, URLs and commands, hook commands, plugin
    names, file paths in the home directory, variable names and the host name.
    agentcfg never reads a header or variable value into it: it records only
    whether a credential is written in a file, which variables it references
@@ -48,6 +57,10 @@ Out of scope:
 
 ## Trust assumptions
 
+- **A device marked `agentcfgSync` is trusted like the user.** It receives the
+  agents' configuration, and what it writes there runs on every device that
+  syncs it: a hook in `settings.json`, an MCP command in `config.toml` or a
+  skill. Mark only your own devices.
 - **The devices of the spec's folder are trusted with its content.** They
   already receive the spec and the encrypted `secrets.age`; a
   receive-encrypted device stores only ciphertext.
@@ -97,6 +110,33 @@ Out of scope:
   and other names are ignored. A device whose spec folder is receive-only
   still reads the others' reports. Nothing in a peer report is acted on.
 
+- **A6. The folders of agent configuration are shared only by the owner's
+  choice, and only configuration.** The service keeps one folder per directory
+  that agentcfg's `SyncFolders` lists: `~/.agents`, `~/.claude` and
+  `~/.codex`, or `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. Each has the ID
+  `agentcfg-<name>` on every device, so they meet without anyone choosing an ID
+  or a path. A folder is shared with exactly the devices marked
+  `agentcfgSync`, and with none while no device is marked. In that case the
+  folder is removed from the configuration and its files are left in place. A
+  device syncs a folder only when both ends have marked each other, as for any
+  Syncthing folder; an offer from a device that this one has not marked is only
+  shown. An untrusted device cannot be marked. Each folder's `.stignore` is
+  written by the service before the folder first starts:
+  - the spec's `[sync.exclude]` patterns for that folder;
+  - for `~/.claude` and `~/.codex`, the configuration entries and then `/*`,
+    so credentials, sessions, history, databases and anything that a later
+    version of an agent adds stay on the device;
+  - for `~/.agents`, repositories, dependencies and caches.
+
+  agentcfg rejects a spec exclusion that includes files (`!`) or is a directive
+  or comment. The file is rewritten, and the folder rescanned, when the
+  patterns change. A directory that another folder already syncs is not shared
+  a second time; the status says which folder to remove. When a marked device
+  already offers a folder that this device creates, this device is joining, and
+  the files that it would sync are dated to the epoch first. Syncthing then
+  keeps the others' copy of every file that differs, and this device's copy
+  becomes a conflict copy.
+
 ## Scenarios
 
 ### F1. Who can read a report
@@ -138,12 +178,27 @@ Out of scope:
 
 - **Disclosure through the report.** URLs and command lines from the spec and
   the agents' files are reported with recognised credentials redacted (see
-  asset 2). A credential that matches none of the patterns, such as a bare
+  asset 3). A credential that matches none of the patterns, such as a bare
   argument, reaches the report. Credentials belong in references (`${VAR}`),
   which agentcfg requires of the spec and reports as `literal-secret` in the
   agents' MCP and settings files; a hook command has no such check.
 - **Resource use.** One small file per device in the spec's folder, rewritten
   when its result changes. The fleet view reads the directory on request.
+  The folders of agent configuration are small, because only configuration is
+  synced.
+
+### F6. Sharing the folders of agent configuration
+
+| Case | Safe behaviour | Enforced by |
+|---|---|---|
+| F6a. A device that this one has not marked shares the folders with it. | Nothing syncs. The GUI shows one notice for that device, instead of three new-folder prompts with the wrong default path. Syncing starts only when the owner marks the device. | A6. |
+| F6b. An untrusted device is marked. | The configuration drops the mark, and nothing is shared with it. | A6, `DeviceConfiguration.prepare`. |
+| F6c. The spec's exclusions try to sync `.credentials.json` with `!`, or include another file. | agentcfg rejects the spec. Patterns that are already in place stay, the folders keep syncing, so the fix can arrive, and the status shows the error. | A6. |
+| F6d. An agent update adds a new state or credential file to `~/.claude` or `~/.codex`. | It is not synced: only the listed configuration entries are. | A6. |
+| F6e. A device joins with a newer, default `settings.json`. | The other devices keep theirs. The joining device's copy becomes a conflict copy, which stays on that device because the root patterns ignore it. A conflict copy inside a synced directory, such as `agents/`, syncs like any other file. If the joining device is marked before the others offer the folders, Syncthing's usual rule applies, and the newer copy wins while the other becomes a conflict copy. | A6. |
+| F6f. `~/.claude` is already a folder with another ID. | It is not added a second time, so two folders never scan one directory. The status names the folder to remove. | A6. |
+| F6g. The last marked device is unmarked. | The folders are removed from the configuration, and the files stay on every device. | A6. |
+| F6h. A marked device adds a hook to `settings.json`. | It syncs, and it runs on every device: this is the trust given by marking the device. `agentcfg check` reports any hook that the spec does not allow. | Trust assumptions. |
 
 ## Success criteria and how they are tested
 
@@ -157,9 +212,20 @@ Out of scope:
 | Our own writes do not trigger another run, other tools' writes do. | A3, F3c | `lib/agentcfg`: automatic apply in a temporary home. |
 | A discovered spec is never applied automatically. | A1, F3b | `lib/agentcfg`: automatic apply without `agentcfgSpecPath`. |
 | The REST endpoints need the API key or a session, and CSRF protection. | Trust assumptions | They are registered on the same router as every other `/rest` endpoint. |
+| The folders are kept for exactly the marked devices, with only the agents' configuration and the spec's exclusions first, and removed once no device is marked. The files stay. | A6, F6d, F6g | `lib/agentcfg`: `TestAgentFoldersAreSharedWithTheMarkedDevices`. |
+| A directory that another folder already syncs is not shared twice. | A6, F6f | `lib/agentcfg`: `TestAgentFolderTakenByAnotherFolderIsReported`. |
+| A joining device yields its differing files, and only the files it would sync. | A6, F6e | `lib/agentcfg`: `TestJoiningDeviceYieldsToTheOthers`. |
+| An exclusion that includes files, or a directive, is rejected. | F6c | agentcfg: `TestLoadRejectsInvalidSpecs`, `TestSyncFoldersShareConfigurationOnlyAndExcludeWhatTheSpecSays`. |
 
 The end-to-end check runs on the real fleet: drift injected on one device shows
 in another device's fleet view within a minute.
+
+Before the real fleet, two instances on loopback, each with its own home,
+check the folders end to end. The second device clicks the notice and joins.
+It receives the first device's settings even though its own are newer, and
+keeps its own as conflict copies. Credentials, history and `auth.json` stay
+on each device, and a spec exclusion holds. An edit propagates back, and
+unmarking leaves the files in place.
 
 ## Sources
 

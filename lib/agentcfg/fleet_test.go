@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/syncthing/syncthing/lib/config"
@@ -22,6 +23,34 @@ var (
 	peerID   = protocol.DeviceID{1}
 	brokenID = protocol.DeviceID{2}
 )
+
+// scanRecorder stands in for the model and records the scans asked for.
+type scanRecorder struct {
+	mut   sync.Mutex
+	scans []string
+}
+
+func (r *scanRecorder) ScanFolderSubdirs(folder string, subs []string) error {
+	r.mut.Lock()
+	defer r.mut.Unlock()
+	for _, sub := range subs {
+		r.scans = append(r.scans, folder+":"+sub)
+	}
+	return nil
+}
+
+// count returns how many scans of sub in folder were asked for.
+func (r *scanRecorder) count(folder, sub string) int {
+	r.mut.Lock()
+	defer r.mut.Unlock()
+	n := 0
+	for _, s := range r.scans {
+		if s == folder+":"+sub {
+			n++
+		}
+	}
+	return n
+}
 
 func (env *testEnv) reportPath(id protocol.DeviceID) string {
 	return filepath.Join(env.folder, filepath.FromSlash(ReportsDir), id.String()+".json")
@@ -58,6 +87,9 @@ func TestFleetSharesReportsThroughTheSpecFolder(t *testing.T) {
 		return ok && reportErrors(st) == 1
 	})
 	first, _ := sharedStatus(t, own)
+	// Syncthing is told about the write rather than left to its watcher.
+	ownSub := ReportsDir + "/" + protocol.LocalDeviceID.String() + ".json"
+	waitFor(t, "a scan of the shared report", func() bool { return env.scans.count("agents", ownSub) == 1 })
 
 	// What the other devices shared arrives in the same directory.
 	peer := Status{Spec: "/home/peer/agentcfg.toml", Folder: "agents", Error: "peer error"}
@@ -111,6 +143,7 @@ func TestFleetSharesReportsThroughTheSpecFolder(t *testing.T) {
 	if _, ok := sharedStatus(t, env.reportPath(peerID)); !ok {
 		t.Error("a peer's report was removed")
 	}
+	waitFor(t, "a scan of the removal", func() bool { return env.scans.count("agents", ownSub) == 2 })
 	if _, err := env.svc.Fleet(); !errors.Is(err, errFleetDisabled) {
 		t.Errorf("Fleet while disabled: %v; want %v", err, errFleetDisabled)
 	}

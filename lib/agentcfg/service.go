@@ -79,6 +79,7 @@ type Service struct {
 
 	cfg      config.Wrapper
 	evLogger events.Logger
+	scanner  Scanner
 
 	// Fixed outside tests.
 	home      string // empty for the user's home
@@ -97,18 +98,26 @@ type Service struct {
 
 	// shareMut guards the shared report: the file written, what it said,
 	// and why it could not be shared.
-	shareMut   sync.Mutex
-	sharedPath string
-	sharedSig  string
-	shareErr   string
+	shareMut  sync.Mutex
+	shared    sharedFile
+	sharedSig string
+	shareErr  string
 }
 
-// New returns the agentcfg service.
-func New(cfg config.Wrapper, evLogger events.Logger) *Service {
+// Scanner is the part of the model that the service tells about the report
+// it writes into a folder.
+type Scanner interface {
+	ScanFolderSubdirs(folder string, subs []string) error
+}
+
+// New returns the agentcfg service. scanner may be nil, which leaves the
+// shared report to the folder's watcher and rescans.
+func New(cfg config.Wrapper, evLogger events.Logger, scanner Scanner) *Service {
 	s := &Service{
 		Supervisor:    suture.New("agentcfg.Service", svcutil.SpecWithDebugLogger()),
 		cfg:           cfg,
 		evLogger:      evLogger,
+		scanner:       scanner,
 		hostNames:     agentcfglib.DefaultHostNames,
 		checksChanged: make(chan struct{}, 1),
 		signature:     signature(Status{}),

@@ -287,7 +287,7 @@ func (a *App) startup() error {
 	a.mainService.Add(discoveryManager)
 	a.mainService.Add(connectionsService)
 
-	agentcfgService := agentcfg.New(a.cfg, a.evLogger, tailnet)
+	agentcfgService := agentcfg.New(a.cfg, a.evLogger)
 	a.mainService.Add(agentcfgService)
 
 	a.cfg.Modify(func(cfg *config.Configuration) {

@@ -63,13 +63,14 @@
     <div ng-if="agentcfgFleetEnabled()">
       <hr/>
       <h4>
-        <span translate>Tailnet Devices</span>
+        <span translate>Fleet</span>
         <button type="button" class="btn btn-default btn-xs pull-right" ng-click="refreshAgentcfgFleet()">
           <span class="fas fa-refresh"></span>&nbsp;<span translate>Refresh</span>
         </button>
       </h4>
       <p ng-if="agentcfg.fleetError" class="text-danger">{{agentcfg.fleetError}}</p>
       <p ng-if="!agentcfg.fleet && !agentcfg.fleetError" translate>Loading...</p>
+      <p class="help-block" ng-if="agentcfg.fleet" translate>Each device shares its report in the folder that holds the spec when its result changes.</p>
       <table class="table table-condensed" ng-if="agentcfg.fleet">
         <thead>
           <tr>
@@ -77,26 +78,30 @@
             <th translate>State</th>
             <th class="text-right" translate>Errors</th>
             <th class="text-right" translate>Warnings</th>
-            <th translate>Checked</th>
+            <th translate>Reported</th>
           </tr>
         </thead>
         <tbody ng-repeat="member in agentcfg.fleet">
           <tr ng-click="member._open = !member._open" style="cursor: pointer">
             <td>
               <span class="fas fa-fw" ng-class="member._open ? 'fa-minus-square' : 'fa-plus-square'" ng-if="member.status.report.findings.length > 0"></span>
-              {{member.name || member.node}}
-              <small ng-if="!member.node" class="text-muted" translate>(this device)</small>
+              {{member.name || member.deviceID.substr(0, 7)}}
+              <small ng-if="member.self" class="text-muted" translate>(this device)</small>
             </td>
-            <td ng-if="member.error" class="text-danger" colspan="4">{{member.error}}</td>
-            <td ng-if="!member.error" ng-switch="agentcfgState(member.status)">
+            <td ng-if="member.error && !member.status" class="text-danger" colspan="4">{{member.error}}</td>
+            <td ng-if="member.status" ng-switch="agentcfgState(member.status)">
               <span ng-switch-when="ok" class="text-success" translate>In Sync</span>
               <span ng-switch-when="drift" class="text-danger" translate>Differs</span>
               <span ng-switch-when="error" class="text-danger" title="{{member.status.error}}">{{member.status.error}}</span>
               <span ng-switch-default translate>Not checked yet.</span>
             </td>
-            <td ng-if="!member.error" class="text-right">{{member.status.report.errors}}</td>
-            <td ng-if="!member.error" class="text-right">{{member.status.report.warnings}}</td>
-            <td ng-if="!member.error">{{member.status.report.checked_at | date:"yyyy-MM-dd HH:mm:ss"}}</td>
+            <td ng-if="member.status" class="text-right">{{member.status.report.errors}}</td>
+            <td ng-if="member.status" class="text-right">{{member.status.report.warnings}}</td>
+            <td ng-if="member.status">{{member.status.report.checked_at | date:"yyyy-MM-dd HH:mm:ss"}}</td>
+          </tr>
+          <tr ng-if="member.error && member.status">
+            <td></td>
+            <td colspan="4" class="text-danger" style="white-space: normal">{{member.error}}</td>
           </tr>
           <tr ng-if="member._open" ng-repeat="finding in member.status.report.findings">
             <td></td>

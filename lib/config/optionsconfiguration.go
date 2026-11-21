@@ -110,9 +110,9 @@ type OptionsConfiguration struct {
 	// Seconds between checks when nothing triggers one sooner; zero means
 	// 600, and the minimum is 60.
 	AgentcfgIntervalS int `json:"agentcfgIntervalS" xml:"agentcfgIntervalS"`
-	// Serve this device's report to tailnet nodes that the tailnet policy
-	// grants github.com/torturado/cap/agentcfg, and show the reports of
-	// the tagged peers. See docs/tailscale/agentcfg-threat-model.md.
+	// Share this device's report with the other devices of the folder that
+	// holds the spec, as .agentcfg/reports/<device ID>.json, and show
+	// theirs. See docs/tailscale/agentcfg-threat-model.md.
 	AgentcfgFleetEnabled bool `json:"agentcfgFleetEnabled" xml:"agentcfgFleetEnabled" default:"false"`
 
 	// Legacy deprecated

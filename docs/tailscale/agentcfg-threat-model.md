@@ -116,7 +116,7 @@ Out of scope:
 
 | Case | Safe behaviour | Enforced by |
 |---|---|---|
-| F3a. A device that shares the spec's folder adds an MCP server with a command. | Devices with automatic apply and an explicit spec path write it, and their agents may then run the command. This is the delegated trust of the spec folder. Make the folder receive-only on devices that should not author the spec. | Trust assumptions. |
+| F3a. A device that shares the spec's folder adds an MCP server with a command. | Devices with automatic apply and an explicit spec path write it, and their agents may then run the command. This is the delegated trust of the spec folder. Make the folder receive-only on devices that should not author the spec; those devices then cannot share their report (A4), so the fleet view trades against this hardening. | Trust assumptions. |
 | F3b. A tailnet device auto-shares a new folder with `agentcfg.toml` at its root. | It is never applied automatically. With no other spec, it is checked and reported. With another spec already present, nothing is checked until one of them is removed, and the report says so. | A1, A2. |
 | F3c. Another tool rewrites a file agentcfg owns. | With automatic apply, agentcfg corrects it after the debounce. Two tools that disagree alternate at the other tool's pace. | A3. |
 | F3d. Another device wants this device to apply. | There is no way to ask: shared reports are only read. | A5. |

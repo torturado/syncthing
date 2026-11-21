@@ -181,6 +181,27 @@ changed since 2.1.5, so the packaged binary can take the database back.
     the first version needed stay (`tag:syncthing` on the six nodes, `tag:fleet-admin` on casa):
     a tagged node returns to a user only by logging in again, and the fork's Tailscale
     integration uses `tag:syncthing`.
+- **Agent folders, 2026-11-21:** casa, aimery, dockerpapa and prox run the fork's `main` at
+  `1bd322e99` (`v2.1.8-dev.18`, torturado/syncthing#10) with the `agentcfg` CLI `v0.2.0`.
+  - The hand-made folders `claude-config`, `codex-config` and `codex-skills` are removed from
+    Syncthing on the four; their files stay. Each device marks the others, portatil included,
+    with `agentcfgSync`, and the fork shares `agentcfg-agents`, `agentcfg-claude` and
+    `agentcfg-codex`. casa created them; the other three joined casa's offer.
+  - The exclusions of the old `~/.agents/.stignore` live in `[sync.exclude]` in the spec. The
+    old `.stignore-shared` files stay on disk, unused. `~/.claude/mcp.json` is no longer synced.
+  - Checks passed:
+    - every device has the three folders at 100 % with no pull errors and no conflict copies of
+      configuration;
+    - a file created in `~/.claude/commands` on casa reaches the other three in 13 s, a file
+      outside the shared list stays on casa, and the removal reaches them;
+    - casa's fleet view shows the four reports through `agentcfg-agents`, 0 errors.
+  - On joining, each device's own fleet report already existed on the others, so 12 conflict
+    copies of reports appeared once; they were removed. A new device has no report on the
+    others yet, so it does not hit this.
+  - Pending: docker, on stock Syncthing, keeps its old folders and no longer receives agent
+    configuration until it moves to the fork on 2026-11-27 (mark the five, remove the old
+    folders); portatil joins when it comes online with the current build (remove its old
+    folders, mark the others).
 
 ## Rules for keeping the fork cheap
 

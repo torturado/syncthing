@@ -1673,7 +1673,7 @@ angular.module('syncthing.core')
         };
 
         // agentcfg: the configuration of the AI coding agents on this
-        // device and, with the fleet view, on the tagged tailnet peers.
+        // device and, with the fleet view, on the devices that share the spec folder.
         $scope.agentcfg = {
             status: null,
             fleet: null,

@@ -71,13 +71,13 @@ claude = ["formatter@official"]               # allowed Claude Code plugins
 [roles.build]
 mcp_servers.registry = { url = "https://registry.example.ts.net/mcp" }
 
-[hosts.aimery]
+[hosts.gpu-box]
 roles = ["build"]
 age_recipient = "age1..."                     # this machine may decrypt secrets.age
 hooks = { claude = ["python3 ~/.claude/hooks/gpu-guard.py"] }
 
 [sync.exclude]                                # files that stay on each machine
-agents = ["/skills/omarchy"]                  # Syncthing ignore patterns, per synced folder
+agents = ["/skills/local-only"]               # Syncthing ignore patterns, per synced folder
 ```
 
 A credential in the spec must be a reference such as `${NAME}`; the spec is rejected

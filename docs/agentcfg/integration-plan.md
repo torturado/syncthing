@@ -7,7 +7,7 @@ Status, 2026-11-20:
   token is rotated.
 - The fixes found before enabling automatic apply are in agentcfg `v0.1.0` (PRs
   torturado/agentcfg#2 and #3), which the fork requires since torturado/syncthing#8.
-- Phase C is rolled out on five machines; docker is pending (see C3).
+- Phase C is rolled out on five machines; prod is pending (see C3).
 
 Deviations from this plan, kept on purpose:
 - Automatic apply needs an explicit `agentcfgSpecPath`. A spec that is only found in a shared
@@ -64,8 +64,8 @@ hook that `check` never sees.
 
 **A3. Layers in the spec.** Use `base`, then roles, then a host match (hostname or tailnet name),
 merged in that order, so unifying the fleet no longer erases a machine's own settings (what
-happened to aimery).
-*Gate:* an aimery-like fixture keeps its own permissions while sharing the base MCP servers.
+happened to gpu-box).
+*Gate:* a gpu-box-like fixture keeps its own permissions while sharing the base MCP servers.
 
 **A4. Secrets by reference.**
 - Synced files carry only references: `${VAR}` for Claude, `env_http_headers` and
@@ -135,15 +135,15 @@ that arrived there. It needs no Tailscale setup and works without Tailscale.
 if needed. On the Arch machines, keep the pacman package installed and point the user unit at
 the fork binary through a systemd drop-in, so rolling back means removing the drop-in.
 
-**C2. Order.** casa → portatil → aimery → dockerpapa → prox → docker. docker (production) goes
+**C2. Order.** desktop → laptop → gpu-box → server-a → server-b → prod. prod (production) goes
 last, and only after a week without incidents on the others.
 
-**C3. Rollout, 2026-11-20.** casa, portatil, aimery, dockerpapa and prox run the fork built from
+**C3. Rollout, 2026-11-20.** desktop, laptop, gpu-box, server-a and server-b run the fork built from
 its `main` at `1c4268385` (`v2.1.8-dev.16`, `CGO_ENABLED=0 go run build.go -no-upgrade build
 syncthing`, so a static binary with modernc SQLite, as in the Debian package). The schema has not
 changed since 2.1.5, so the packaged binary can take the database back.
-- **Binary:** `~/.local/bin/syncthing-agentcfg` for the user units (casa, portatil, aimery),
-  `/usr/local/bin/syncthing-agentcfg` for `syncthing@root` (dockerpapa, prox, docker).
+- **Binary:** `~/.local/bin/syncthing-agentcfg` for the user units (desktop, laptop, gpu-box),
+  `/usr/local/bin/syncthing-agentcfg` for `syncthing@root` (server-a, server-b, prod).
 - **Drop-in:** `agentcfg-fork.conf` in `~/.config/systemd/user/syncthing.service.d/` or
   `/etc/systemd/system/syncthing@root.service.d/`:
   ```ini
@@ -158,51 +158,51 @@ changed since 2.1.5, so the packaged binary can take the database back.
 - **CLI:** `agentcfg` `v0.1.0` at the same path as before.
 - **Checks passed:**
   - every machine reports 0 errors and 0 warnings, and connects to all five peers;
-  - a file created and then deleted on casa reaches stock-Syncthing docker in 20 s;
-  - `herdr integration install claude` on portatil shows as an `undeclared-hook` error in
-    portatil's report within 3 s, `agentcfg apply` lists the removal, and uninstalling clears
+  - a file created and then deleted on desktop reaches stock-Syncthing prod in 20 s;
+  - `herdr integration install claude` on laptop shows as an `undeclared-hook` error in
+    laptop's report within 3 s, `agentcfg apply` lists the removal, and uninstalling clears
     the error within 3 s.
 - **Pending:**
-  - docker, on 2026-11-27 if the others have no incidents. portatil, which was off, moved to
+  - prod, on 2026-11-27 if the others have no incidents. laptop, which was off, moved to
     the current build with the agent folders below.
-- **Fleet view, 2026-11-21:** casa, aimery, dockerpapa and prox run the fork's `main` at
+- **Fleet view, 2026-11-21:** desktop, gpu-box, server-a and server-b run the fork's `main` at
   `58f004e13` (`v2.1.8-dev.17`, torturado/syncthing#9), which shares the reports through
   `~/.agents`.
-  - casa's fleet view shows all four reports, and nothing listens on port 22100;
-  - a server added to aimery's `~/.claude.json` shows in casa's fleet view in 3 s and clears in
+  - desktop's fleet view shows all four reports, and nothing listens on port 22100;
+  - a server added to gpu-box's `~/.claude.json` shows in desktop's fleet view in 3 s and clears in
     3 s once removed;
-  - casa's Syncthing theme, `syncthing-omarchy` from the Omarchy plugin, keeps its own copy of
+  - desktop's Syncthing theme, a third-party one, keeps its own copy of
     the GUI's `index.html`, taken when the theme is applied. A copy from before the fork hides the
-    agentcfg row and panel; applying the theme again, or running the plugin's
+    agentcfg row and panel; applying the theme again, or running the theme's
     `syncthing-theme.sh generate`, takes a new copy.
-  - docker, on stock Syncthing, receives the report files with the rest of the folder.
+  - prod, on stock Syncthing, receives the report files with the rest of the folder.
   - The `github.com/torturado/cap/agentcfg` grant is removed from the tailnet policy. The tags
-    the first version needed stay (`tag:syncthing` on the six nodes, `tag:fleet-admin` on casa):
+    the first version needed stay (`tag:syncthing` on the six nodes, `tag:fleet-admin` on desktop):
     a tagged node returns to a user only by logging in again, and the fork's Tailscale
     integration uses `tag:syncthing`.
-- **Agent folders, 2026-11-21:** casa, aimery, dockerpapa and prox run the fork's `main` at
+- **Agent folders, 2026-11-21:** desktop, gpu-box, server-a and server-b run the fork's `main` at
   `1bd322e99` (`v2.1.8-dev.18`, torturado/syncthing#10) with the `agentcfg` CLI `v0.2.0`.
   - The hand-made folders `claude-config`, `codex-config` and `codex-skills` are removed from
-    Syncthing on the four; their files stay. Each device marks the others, portatil included,
+    Syncthing on the four; their files stay. Each device marks the others, laptop included,
     with `agentcfgSync`, and the fork shares `agentcfg-agents`, `agentcfg-claude` and
-    `agentcfg-codex`. casa created them; the other three joined casa's offer.
+    `agentcfg-codex`. desktop created them; the other three joined desktop's offer.
   - The exclusions of the old `~/.agents/.stignore` live in `[sync.exclude]` in the spec. The
     old `.stignore-shared` files are removed. `~/.claude/mcp.json` is no longer synced.
   - Checks passed:
     - every device has the three folders at 100 % with no pull errors and no conflict copies of
       configuration;
-    - a file created in `~/.claude/commands` on casa reaches the other three in 13 s, a file
-      outside the shared list stays on casa, and the removal reaches them;
-    - casa's fleet view shows the four reports through `agentcfg-agents`, 0 errors.
+    - a file created in `~/.claude/commands` on desktop reaches the other three in 13 s, a file
+      outside the shared list stays on desktop, and the removal reaches them;
+    - desktop's fleet view shows the four reports through `agentcfg-agents`, 0 errors.
   - On joining, each device's own fleet report already existed on the others, so 12 conflict
     copies of reports appeared once; they were removed. A new device has no report on the
     others yet, so it does not hit this.
-  - portatil joined the same day, when it came online: the same build and CLI, its old
+  - laptop joined the same day, when it came online: the same build and CLI, its old
     folders removed, the others marked, the `[env]` line for `agentcfg.conf` added to its mise
-    configuration, and its Syncthing theme regenerated, as was casa's. Both themes show the
-    agentcfg row and panel. casa's fleet view shows the five reports, 0 errors, and `~/.agents`
-    holds the same 1050 files on casa and portatil.
-  - Pending: docker, on stock Syncthing, keeps its old folders and no longer receives agent
+    configuration, and its Syncthing theme regenerated, as was desktop's. Both themes show the
+    agentcfg row and panel. desktop's fleet view shows the five reports, 0 errors, and `~/.agents`
+    holds the same 1050 files on desktop and laptop.
+  - Pending: prod, on stock Syncthing, keeps its old folders and no longer receives agent
     configuration until it moves to the fork on 2026-11-27 (mark the five, remove the old
     folders).
 - **One repository, 2026-11-21:** agentcfg moved into the fork with its history:
@@ -228,7 +228,7 @@ changed since 2.1.5, so the packaged binary can take the database back.
 | Upstream suite on the fork, `go run build.go test` with `-race` | green |
 | agentcfg suite | green, including the A2–A5 fixtures |
 | Interoperability | a stock Syncthing peer keeps syncing with a fork peer |
-| Drift injection: `herdr integration install claude` on portatil | shows in casa's fleet view within 1 min; with `agentcfgApply = auto`, corrected within 1 min |
+| Drift injection: `herdr integration install claude` on laptop | shows in desktop's fleet view within 1 min; with `agentcfgApply = auto`, corrected within 1 min |
 | Fleet transport | reports arrive through the spec folder with no Tailscale tag or grant; nothing listens on port 22100 |
 | Fleet | all six machines report zero errors |
 

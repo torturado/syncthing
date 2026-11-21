@@ -102,12 +102,12 @@ var baseSpec = filepath.Join("testdata", "spec.toml")
 
 func TestCleanMachineHasNoFindings(t *testing.T) {
 	setVariables(t, true)
-	assertFindings(t, findings(t, options(t, copyHome(t, "clean"), baseSpec, "casa")), nil)
+	assertFindings(t, findings(t, options(t, copyHome(t, "clean"), baseSpec, "desktop")), nil)
 }
 
 func TestReferencedVariablesMissingFromEnvironmentAreWarnings(t *testing.T) {
 	setVariables(t, false)
-	assertFindings(t, findings(t, options(t, copyHome(t, "clean"), baseSpec, "casa")), []string{
+	assertFindings(t, findings(t, options(t, copyHome(t, "clean"), baseSpec, "desktop")), []string{
 		"claude warning unset-variable mcpServers.search.headers.X-API-Key",
 		"claude warning unset-variable mcpServers.deploy.headers.Authorization",
 		"codex warning unset-variable mcp_servers.search.env_http_headers.X-API-Key",
@@ -122,7 +122,7 @@ func TestReferenceInSettingsEnvIsReportedAsUnexpanded(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(settings), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	assertFindings(t, findings(t, options(t, home, baseSpec, "casa")), []string{
+	assertFindings(t, findings(t, options(t, home, baseSpec, "desktop")), []string{
 		"claude error unexpanded-variable env.ANTHROPIC_AUTH_TOKEN",
 	})
 }
@@ -146,12 +146,12 @@ var driftedFindings = []string{
 
 func TestDriftedMachineReportsEveryDeviation(t *testing.T) {
 	setVariables(t, false)
-	assertFindings(t, findings(t, options(t, copyHome(t, "drifted"), baseSpec, "casa")), driftedFindings)
+	assertFindings(t, findings(t, options(t, copyHome(t, "drifted"), baseSpec, "desktop")), driftedFindings)
 }
 
 func TestMissingServerIsReported(t *testing.T) {
 	setVariables(t, true)
-	assertFindings(t, findings(t, options(t, t.TempDir(), baseSpec, "casa")), []string{
+	assertFindings(t, findings(t, options(t, t.TempDir(), baseSpec, "desktop")), []string{
 		"claude error missing-server mcp_servers.deploy",
 		"claude error missing-server mcp_servers.search",
 		"codex error missing-server mcp_servers.deploy",
@@ -161,7 +161,7 @@ func TestMissingServerIsReported(t *testing.T) {
 
 func TestEnabledPluginHooksAndServersAreReported(t *testing.T) {
 	setVariables(t, true)
-	assertFindings(t, findings(t, options(t, copyHome(t, "plugin"), baseSpec, "casa")), []string{
+	assertFindings(t, findings(t, options(t, copyHome(t, "plugin"), baseSpec, "desktop")), []string{
 		"claude error undeclared-hook SessionStart",
 		"claude error undeclared-plugin enabledPlugins.notify@example",
 		"claude error undeclared-plugin enabledPlugins.skills-only@example",
@@ -188,7 +188,7 @@ agents = ["claude"]
 	if err := os.WriteFile(specPath, spec, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	assertFindings(t, findings(t, options(t, copyHome(t, "plugin"), specPath, "casa")), []string{
+	assertFindings(t, findings(t, options(t, copyHome(t, "plugin"), specPath, "desktop")), []string{
 		"codex error missing-server mcp_servers.deploy",
 		"codex error missing-server mcp_servers.search",
 	})
@@ -198,8 +198,8 @@ var fleetSpec = filepath.Join("testdata", "fleet", "spec.toml")
 
 func TestHostLayerKeepsMachineSettingsWhileSharingBase(t *testing.T) {
 	setVariables(t, true)
-	home := copyHome(t, filepath.Join("fleet", "aimery"))
-	opts := options(t, home, fleetSpec, "aimery")
+	home := copyHome(t, filepath.Join("fleet", "gpu-box"))
+	opts := options(t, home, fleetSpec, "gpu-box")
 	settingsBefore, _ := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 
 	assertFindings(t, findings(t, opts), nil)
@@ -213,7 +213,7 @@ func TestHostLayerKeepsMachineSettingsWhileSharingBase(t *testing.T) {
 	}
 	settingsAfter, _ := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	if string(settingsBefore) != string(settingsAfter) {
-		t.Error("apply changed aimery's settings.json")
+		t.Error("apply changed gpu-box's settings.json")
 	}
 
 	// When the machine's names match no entry, for instance because tailscale
@@ -234,7 +234,7 @@ func TestHostLayerKeepsMachineSettingsWhileSharingBase(t *testing.T) {
 func TestApplyCorrectsDriftAndKeepsAgentState(t *testing.T) {
 	setVariables(t, false)
 	home := copyHome(t, "drifted")
-	opts := options(t, home, baseSpec, "casa")
+	opts := options(t, home, baseSpec, "desktop")
 
 	projectsBefore := claudeProjects(t, home)
 	codexBefore := codexConfig(t, home)
@@ -291,7 +291,7 @@ func TestApplyCorrectsDriftAndKeepsAgentState(t *testing.T) {
 func TestApplyWithoutWriteChangesNothing(t *testing.T) {
 	home := copyHome(t, "drifted")
 	before := snapshot(t, home)
-	report, err := agentcfg.Plan(context.Background(), options(t, home, baseSpec, "casa"))
+	report, err := agentcfg.Plan(context.Background(), options(t, home, baseSpec, "desktop"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestApplyWritesThroughSymlinkAndKeepsComments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := agentcfg.Apply(context.Background(), options(t, home, baseSpec, "casa")); err != nil {
+	if _, err := agentcfg.Apply(context.Background(), options(t, home, baseSpec, "desktop")); err != nil {
 		t.Fatal(err)
 	}
 	if target, err := os.Readlink(link); err != nil || target != real {
@@ -340,7 +340,7 @@ func TestApplyWritesThroughSymlinkAndKeepsComments(t *testing.T) {
 func TestApplyCorrectsHookReinstall(t *testing.T) {
 	setVariables(t, true)
 	home := copyHome(t, "clean")
-	opts := options(t, home, baseSpec, "casa")
+	opts := options(t, home, baseSpec, "desktop")
 	settings := filepath.Join(home, ".claude", "settings.json")
 	if err := os.WriteFile(settings, []byte(`{
   "env": { "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1" },
@@ -479,7 +479,7 @@ func TestApplyCorrectsServersWhereTheyAreAndKeepsTheirOptions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	opts := options(t, home, specPath, "casa")
+	opts := options(t, home, specPath, "desktop")
 
 	if _, err := agentcfg.Apply(context.Background(), opts); err != nil {
 		t.Fatal(err)
@@ -539,7 +539,7 @@ func TestReportsDoNotCarryCredentials(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	opts := options(t, home, baseSpec, "casa")
+	opts := options(t, home, baseSpec, "desktop")
 	report, err := agentcfg.Check(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -570,7 +570,7 @@ func readFile(t *testing.T, path string) string {
 
 func TestSyncFoldersShareConfigurationOnlyAndExcludeWhatTheSpecSays(t *testing.T) {
 	home := t.TempDir()
-	opts := options(t, home, filepath.Join(home, ".agents", "agentcfg.toml"), "casa")
+	opts := options(t, home, filepath.Join(home, ".agents", "agentcfg.toml"), "desktop")
 
 	// A machine waiting for the spec still knows what to sync.
 	folders, err := agentcfg.SyncFolders(opts)

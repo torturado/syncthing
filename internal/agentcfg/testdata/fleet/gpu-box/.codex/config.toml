@@ -1,4 +1,4 @@
-# aimery runs long training jobs; keep the sandbox relaxed.
+# gpu-box runs long training jobs; keep the sandbox relaxed.
 sandbox_mode = "workspace-write"
 
 [mcp_servers.search]

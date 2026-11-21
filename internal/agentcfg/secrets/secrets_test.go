@@ -20,16 +20,16 @@ import (
 
 func TestEveryRecipientDecryptsAndShellsReadTheEnvironmentFile(t *testing.T) {
 	dir := t.TempDir()
-	casa, portatil := filepath.Join(dir, "casa.txt"), filepath.Join(dir, "portatil.txt")
+	desktop, laptop := filepath.Join(dir, "desktop.txt"), filepath.Join(dir, "laptop.txt")
 	var recipients []string
-	for _, identity := range []string{casa, portatil} {
+	for _, identity := range []string{desktop, laptop} {
 		recipient, err := secrets.Keygen(identity)
 		if err != nil {
 			t.Fatal(err)
 		}
 		recipients = append(recipients, recipient)
 	}
-	if _, err := secrets.Keygen(casa); err == nil {
+	if _, err := secrets.Keygen(desktop); err == nil {
 		t.Error("keygen replaced an existing identity")
 	}
 
@@ -47,7 +47,7 @@ func TestEveryRecipientDecryptsAndShellsReadTheEnvironmentFile(t *testing.T) {
 		t.Fatal("secrets written in plain text")
 	}
 
-	for _, identity := range []string{casa, portatil} {
+	for _, identity := range []string{desktop, laptop} {
 		got, err := secrets.Load(secretsPath, identity)
 		if err != nil {
 			t.Fatal(err)

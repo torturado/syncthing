@@ -8,261 +8,234 @@ package agentcfg
 
 import (
 	"cmp"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"io/fs"
 	"log/slog"
-	"net"
-	"net/http"
-	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
-	"sync"
-	"time"
-
-	"tailscale.com/tailcfg"
+	"strings"
 
 	"github.com/syncthing/syncthing/internal/slogutil"
-	"github.com/syncthing/syncthing/lib/tailscale"
+	"github.com/syncthing/syncthing/lib/config"
+	stfs "github.com/syncthing/syncthing/lib/fs"
+	"github.com/syncthing/syncthing/lib/protocol"
 )
 
 const (
-	// FleetPort is the TCP port of the tailnet-only report listener on
-	// every tailnet address of the device.
-	FleetPort uint16 = 22100
-	// CapAgentcfg is the application capability that a tailnet policy grant
-	// gives to the nodes that may read a device's report. Its values are
-	// fleetGrants.
-	CapAgentcfg tailcfg.PeerCapability = "github.com/torturado/cap/agentcfg"
+	// ReportsDir is where, within the folder that holds the spec, each
+	// device shares its status as <device ID>.json.
+	ReportsDir = ".agentcfg/reports"
 
-	fleetReportPath = "/agentcfg/report"
-	// The tailnet's Updates channel has a single consumer, the connection
-	// service, so the listeners follow the tailnet addresses by polling.
-	fleetFollowInterval = 2 * time.Second
-	fleetPeerTimeout    = 5 * time.Second
-	fleetMaxResponse    = 1 << 20
+	fleetMaxReport = 1 << 20
 )
 
 var errFleetDisabled = errors.New("the agentcfg fleet view is disabled")
 
-// Tailnet is the part of the Tailscale integration that the fleet view uses.
-type Tailnet interface {
-	// Addresses returns our tailnet addresses; empty while unavailable.
-	Addresses() []netip.Addr
-	// Nodes returns the tagged peers of our tailnet.
-	Nodes() []tailscale.Node
-	// Capabilities returns what the tailnet policy grants the tagged node
-	// of our tailnet at remote towards us.
-	Capabilities(ctx context.Context, remote netip.AddrPort) (tailcfg.PeerCapMap, error)
-}
-
-// fleetGrant is one value of CapAgentcfg.
-type fleetGrant struct {
-	// Access is "read" for reading the report; nothing else is granted.
-	Access string `json:"access"`
-}
-
-type fleetServer struct {
-	srv  *http.Server
-	addr net.Addr
-}
-
 func (s *Service) fleetEnabled() bool {
 	opts := s.cfg.Options()
-	return opts.AgentcfgEnabled && opts.AgentcfgFleetEnabled && s.tailnet != nil
+	return opts.AgentcfgEnabled && opts.AgentcfgFleetEnabled
 }
 
-// serveFleet keeps one report listener on each of our tailnet addresses
-// while the fleet view is enabled, and none while the tailnet is
-// unavailable.
-func (s *Service) serveFleet(ctx context.Context) error {
-	defer s.updateFleetListeners(ctx, nil)
-	ticker := time.NewTicker(fleetFollowInterval)
-	defer ticker.Stop()
-	for {
-		var addrs []string
-		if s.fleetEnabled() {
-			for _, ip := range s.tailnet.Addresses() {
-				addrs = append(addrs, netip.AddrPortFrom(ip, s.fleetPort).String())
-			}
-		}
-		s.updateFleetListeners(ctx, addrs)
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-		case <-s.fleetChanged:
-		}
+// reportsDir returns the reports directory of a shared folder, or why this
+// device cannot share its report there.
+func reportsDir(cfg config.Configuration, folderID string) (string, error) {
+	if folderID == "" {
+		return "", errors.New("the spec is not in a shared folder, so there is nowhere to share the report")
 	}
-}
-
-func (s *Service) updateFleetListeners(ctx context.Context, addrs []string) {
-	s.fleetMut.Lock()
-	defer s.fleetMut.Unlock()
-	for addr, server := range s.fleetServers {
-		if !slices.Contains(addrs, addr) {
-			// Close, unlike Shutdown, also ends the open connections.
-			server.srv.Close()
-			delete(s.fleetServers, addr)
-			slog.InfoContext(ctx, "Stopped agentcfg report listener", slogutil.Address(addr))
-		}
+	folder, _, ok := cfg.Folder(folderID)
+	if !ok {
+		return "", fmt.Errorf("folder %s is not configured", folderID)
 	}
-	for _, addr := range addrs {
-		if _, ok := s.fleetServers[addr]; ok {
-			continue
-		}
-		lst, err := new(net.ListenConfig).Listen(ctx, "tcp", addr)
-		if err != nil {
-			// Retried on the next round, such as once the address is
-			// assigned to the interface.
-			slog.WarnContext(ctx, "Failed to start agentcfg report listener", slogutil.Address(addr), slogutil.Error(err))
-			continue
-		}
-		srv := &http.Server{
-			Handler:           http.HandlerFunc(s.serveFleetRequest),
-			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       10 * time.Second,
-			WriteTimeout:      10 * time.Second,
-			IdleTimeout:       30 * time.Second,
-			MaxHeaderBytes:    8 << 10,
-			ErrorLog:          log.New(io.Discard, "", 0),
-		}
-		go func() { _ = srv.Serve(lst) }()
-		s.fleetServers[addr] = &fleetServer{srv: srv, addr: lst.Addr()}
-		slog.InfoContext(ctx, "Serving agentcfg report on the tailnet", slogutil.Address(lst.Addr()))
+	switch folder.Type {
+	case config.FolderTypeReceiveOnly, config.FolderTypeReceiveEncrypted:
+		return "", fmt.Errorf("folder %s is %s here, so this device's report would not reach the others", folderID, folder.Type)
 	}
-}
-
-// serveFleetRequest authorizes every request with the tailnet before
-// looking at it, and then serves only the report.
-func (s *Service) serveFleetRequest(w http.ResponseWriter, r *http.Request) {
-	remote, err := netip.ParseAddrPort(r.RemoteAddr)
-	if err == nil {
-		err = authorizeRead(r.Context(), s.tailnet, remote)
-	}
+	root, err := stfs.ExpandTilde(folder.Path)
 	if err != nil {
-		slog.DebugContext(r.Context(), "Refused agentcfg report request", slogutil.Address(r.RemoteAddr), slogutil.Error(err))
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
+		return "", err
 	}
-	if r.URL.Path != fleetReportPath {
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	writeJSON(w, s.Status())
+	return filepath.Join(root, filepath.FromSlash(ReportsDir)), nil
 }
 
-// authorizeRead accepts a node that the tailnet policy grants CapAgentcfg
-// with read access. Anything else, including any error, is refused.
-func authorizeRead(ctx context.Context, tn Tailnet, remote netip.AddrPort) error {
-	caps, err := tn.Capabilities(ctx, remote)
+// sharedFile is where this device's report is shared.
+type sharedFile struct {
+	folder string // folder ID
+	path   string // on disk
+}
+
+// share keeps this device's status in the folder that holds the spec while
+// the fleet view is on, and removes it otherwise. The file is rewritten only
+// when what the status says changes, so the folder sees one change per
+// change of result.
+func (s *Service) share(st Status) {
+	cfg := s.cfg.RawCopy()
+	folderID := st.Folder
+	if folderID == "" {
+		// Disabled, or the spec could not be read: the folder is still
+		// where an earlier report may have to be removed from.
+		if target, err := findSpec(cfg); err == nil {
+			folderID = target.folder
+		}
+	}
+	var current sharedFile
+	dir, err := reportsDir(cfg, folderID)
+	if err == nil {
+		current = sharedFile{folder: folderID, path: filepath.Join(dir, s.cfg.MyID().String()+".json")}
+	}
+	enabled := cfg.Options.AgentcfgEnabled && cfg.Options.AgentcfgFleetEnabled
+
+	s.shareMut.Lock()
+	defer s.shareMut.Unlock()
+	for _, old := range []sharedFile{s.shared, current} {
+		if old.path == "" || enabled && old == current {
+			continue
+		}
+		if err := os.Remove(old.path); err == nil {
+			slog.Info("Removed the shared agentcfg report", slogutil.FilePath(old.path))
+			s.scanShared(old)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("Failed to remove the shared agentcfg report", slogutil.FilePath(old.path), slogutil.Error(err))
+		}
+	}
+	s.shared, s.shareErr = sharedFile{}, ""
+	if !enabled {
+		s.sharedSig = ""
+		return
+	}
+	if current.path == "" {
+		s.shareErr = err.Error()
+		return
+	}
+	s.shared = current
+	if sig := current.path + "\x02" + signature(st); sig != s.sharedSig {
+		if err := writeReport(current.path, st); err != nil {
+			slog.Warn("Failed to share the agentcfg report", slogutil.FilePath(current.path), slogutil.Error(err))
+			s.shareErr = err.Error()
+			s.sharedSig = ""
+			return
+		}
+		s.sharedSig = sig
+		s.scanShared(current)
+	}
+}
+
+// scanShared tells Syncthing about a change to the shared report rather
+// than waiting for the folder's watcher, which may be off, or may start
+// only after the change, such as one made just after startup. A folder that
+// is not running yet scans the file when it starts.
+func (s *Service) scanShared(f sharedFile) {
+	if s.scanner == nil {
+		return
+	}
+	sub := ReportsDir + "/" + filepath.Base(f.path)
+	go func() {
+		if err := s.scanner.ScanFolderSubdirs(f.folder, []string{sub}); err != nil {
+			slog.Debug("Failed to scan the shared agentcfg report", slogutil.FilePath(f.path), slogutil.Error(err))
+		}
+	}()
+}
+
+// writeReport replaces the report file through a temporary name that
+// Syncthing does not scan.
+func writeReport(path string, st Status) error {
+	bs, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
-	grants, err := tailcfg.UnmarshalCapJSON[fleetGrant](caps, CapAgentcfg)
-	if err != nil {
-		return fmt.Errorf("invalid %s grant: %w", CapAgentcfg, err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
-	if !slices.ContainsFunc(grants, func(g fleetGrant) bool { return g.Access == "read" }) {
-		return errors.New("tailnet policy does not grant read access to " + string(CapAgentcfg))
+	tmp := stfs.TempName(path)
+	if err := os.WriteFile(tmp, append(bs, '\n'), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	return nil
 }
 
 // FleetMember is one device in the fleet view.
 type FleetMember struct {
-	Name string `json:"name"`
-	// Node is the tailnet node ID, empty for this device; Address is where
-	// its report was read.
-	Node    string  `json:"node"`
-	Address string  `json:"address"`
-	Status  *Status `json:"status"`
-	Error   string  `json:"error"`
+	DeviceID string  `json:"deviceID"`
+	Name     string  `json:"name"`
+	Self     bool    `json:"self"`
+	Status   *Status `json:"status"`
+	// Error says why this device's report is not shared, or why a peer's
+	// report could not be read.
+	Error string `json:"error"`
 }
 
-// Fleet returns the status of this device, followed by the reports of the
-// tagged peers, read from their report listeners.
-func (s *Service) Fleet(ctx context.Context) ([]FleetMember, error) {
+// Fleet returns the status of this device, followed by the reports that the
+// other devices shared in the folder that holds the spec.
+func (s *Service) Fleet() ([]FleetMember, error) {
 	if !s.fleetEnabled() {
 		return nil, errFleetDisabled
 	}
+	cfg := s.cfg.RawCopy()
 	st := s.Status()
-	self, _ := s.cfg.Device(s.cfg.MyID())
-	nodes := s.tailnet.Nodes()
-	peers := make([]FleetMember, len(nodes))
-	var wg sync.WaitGroup
-	for i, node := range nodes {
-		wg.Go(func() { peers[i] = s.fetchReport(ctx, node) })
+	myID := s.cfg.MyID()
+	s.shareMut.Lock()
+	self := FleetMember{DeviceID: myID.String(), Name: deviceName(cfg, myID), Self: true, Status: &st, Error: s.shareErr}
+	s.shareMut.Unlock()
+
+	dir, err := reportsDir(cfg, st.Folder)
+	if err != nil {
+		if self.Error == "" {
+			self.Error = err.Error()
+		}
+		return []FleetMember{self}, nil
 	}
-	wg.Wait()
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	var peers []FleetMember
+	for _, entry := range entries {
+		name, ok := strings.CutSuffix(entry.Name(), ".json")
+		if !ok || !entry.Type().IsRegular() {
+			continue
+		}
+		// Conflict copies and anything else not named by a device ID are
+		// not reports.
+		id, err := protocol.DeviceIDFromString(name)
+		if err != nil || id == myID {
+			continue
+		}
+		m := FleetMember{DeviceID: id.String(), Name: deviceName(cfg, id)}
+		if peer, err := readReport(filepath.Join(dir, entry.Name())); err != nil {
+			m.Error = err.Error()
+		} else {
+			m.Status = &peer
+		}
+		peers = append(peers, m)
+	}
 	slices.SortFunc(peers, func(a, b FleetMember) int {
-		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Node, b.Node))
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.DeviceID, b.DeviceID))
 	})
-	return append([]FleetMember{{Name: self.Name, Status: &st}}, peers...), nil
+	return append([]FleetMember{self}, peers...), nil
 }
 
-// fleetClient never uses a proxy, which would hide our tailnet address from
-// the peer, and never follows a redirect, which could lead anywhere.
-var fleetClient = &http.Client{
-	Transport: &http.Transport{DisableKeepAlives: true},
-	CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	},
-}
-
-func (s *Service) fetchReport(ctx context.Context, node tailscale.Node) FleetMember {
-	m := FleetMember{Name: node.Name, Node: node.ID}
-	ctx, cancel := context.WithTimeout(ctx, fleetPeerTimeout)
-	defer cancel()
-	var errs []error
-	for _, ip := range node.Addrs {
-		addr := netip.AddrPortFrom(ip, s.fleetPort).String()
-		st, answered, err := getReport(ctx, addr)
-		if err == nil {
-			m.Address = addr
-			m.Status = &st
-			return m
-		}
-		errs = append(errs, err)
-		if answered {
-			break
-		}
-	}
-	if len(errs) == 0 {
-		errs = append(errs, errors.New("no tailnet address"))
-	}
-	m.Error = errors.Join(errs...).Error()
-	return m
-}
-
-// getReport reads a peer's report. answered says whether the peer
-// responded at all, in which case its other addresses would say the same.
-func getReport(ctx context.Context, addr string) (Status, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+fleetReportPath, nil)
+func readReport(path string) (Status, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return Status{}, false, err
+		return Status{}, err
 	}
-	resp, err := fleetClient.Do(req)
-	if err != nil {
-		return Status{}, false, err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusForbidden:
-		return Status{}, true, fmt.Errorf("%s refused the request; the tailnet policy must grant this node %s with {\"access\": \"read\"}", addr, CapAgentcfg)
-	default:
-		return Status{}, true, fmt.Errorf("%s answered %s", addr, resp.Status)
-	}
+	defer f.Close()
 	var st Status
-	if err := json.NewDecoder(io.LimitReader(resp.Body, fleetMaxResponse)).Decode(&st); err != nil {
-		return Status{}, true, fmt.Errorf("%s sent an invalid report: %w", addr, err)
+	if err := json.NewDecoder(io.LimitReader(f, fleetMaxReport)).Decode(&st); err != nil {
+		return Status{}, fmt.Errorf("invalid report: %w", err)
 	}
-	return st, true, nil
+	return st, nil
+}
+
+// deviceName is the name this device knows a device by, empty if unknown.
+func deviceName(cfg config.Configuration, id protocol.DeviceID) string {
+	dev, _, _ := cfg.Device(id)
+	return dev.Name
 }

@@ -18,7 +18,7 @@ import (
 // rest of the API.
 //
 //	GET  /rest/agentcfg/report               this device's Status
-//	GET  /rest/agentcfg/fleet                []FleetMember
+//	GET  /rest/agentcfg/fleet                []FleetMember, this device first
 //	POST /rest/agentcfg/apply[?dryrun=true]  the ApplyReport of Apply or Plan
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
@@ -30,7 +30,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.Status())
 
 	case "/rest/agentcfg/fleet":
-		fleet, err := s.Fleet(r.Context())
+		fleet, err := s.Fleet()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return

@@ -7,216 +7,165 @@
 package agentcfg
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"net"
-	"net/http"
-	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
-
-	"tailscale.com/tailcfg"
 
 	"github.com/syncthing/syncthing/lib/config"
-	"github.com/syncthing/syncthing/lib/tailscale"
+	"github.com/syncthing/syncthing/lib/protocol"
 )
 
-// fakeTailnet stands in for lib/tailscale, whose own tests cover how WhoIs
-// answers become capabilities or refusals.
-type fakeTailnet struct {
+var (
+	peerID   = protocol.DeviceID{1}
+	brokenID = protocol.DeviceID{2}
+)
+
+// scanRecorder stands in for the model and records the scans asked for.
+type scanRecorder struct {
 	mut   sync.Mutex
-	addrs []netip.Addr
-	nodes []tailscale.Node
-	caps  map[netip.Addr]tailcfg.PeerCapMap // by remote address
-	err   error                             // what Capabilities fails with
+	scans []string
 }
 
-func (f *fakeTailnet) Addresses() []netip.Addr {
-	f.mut.Lock()
-	defer f.mut.Unlock()
-	return f.addrs
-}
-
-func (f *fakeTailnet) Nodes() []tailscale.Node {
-	f.mut.Lock()
-	defer f.mut.Unlock()
-	return f.nodes
-}
-
-func (f *fakeTailnet) Capabilities(_ context.Context, remote netip.AddrPort) (tailcfg.PeerCapMap, error) {
-	f.mut.Lock()
-	defer f.mut.Unlock()
-	if f.err != nil {
-		return nil, f.err
+func (r *scanRecorder) ScanFolderSubdirs(folder string, subs []string) error {
+	r.mut.Lock()
+	defer r.mut.Unlock()
+	for _, sub := range subs {
+		r.scans = append(r.scans, folder+":"+sub)
 	}
-	return f.caps[remote.Addr()], nil
+	return nil
 }
 
-func (f *fakeTailnet) set(fn func(*fakeTailnet)) {
-	f.mut.Lock()
-	defer f.mut.Unlock()
-	fn(f)
+// count returns how many scans of sub in folder were asked for.
+func (r *scanRecorder) count(folder, sub string) int {
+	r.mut.Lock()
+	defer r.mut.Unlock()
+	n := 0
+	for _, s := range r.scans {
+		if s == folder+":"+sub {
+			n++
+		}
+	}
+	return n
 }
 
-var loopback = netip.MustParseAddr("127.0.0.1")
-
-func readGrant(access string) tailcfg.PeerCapMap {
-	return tailcfg.PeerCapMap{CapAgentcfg: {tailcfg.RawMessage(`{"access":"` + access + `"}`)}}
+func (env *testEnv) reportPath(id protocol.DeviceID) string {
+	return filepath.Join(env.folder, filepath.FromSlash(ReportsDir), id.String()+".json")
 }
 
-func freePort(t *testing.T) uint16 {
+func sharedStatus(t *testing.T, path string) (Status, bool) {
 	t.Helper()
-	lst, err := net.Listen("tcp", "127.0.0.1:0")
+	bs, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Status{}, false
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lst.Close()
-	return uint16(lst.Addr().(*net.TCPAddr).Port) //nolint:gosec // a listening port fits
-}
-
-// newFleetEnv returns a service with the fleet view on over tn, serving its
-// report on a free port.
-func newFleetEnv(t *testing.T, tn *fakeTailnet) *testEnv {
-	t.Helper()
-	env := newTestEnv(t, func(cfg *config.Configuration) { cfg.Options.AgentcfgFleetEnabled = true })
-	env.svc = New(env.cfg, env.evLogger, tn)
-	env.svc.home = env.home
-	env.svc.hostNames = func(context.Context) []string { return []string{"test-host"} }
-	env.svc.fleetPort = freePort(t)
-	return env
-}
-
-func (env *testEnv) reportURL() string {
-	return "http://" + netip.AddrPortFrom(loopback, env.svc.fleetPort).String() + fleetReportPath
-}
-
-func (env *testEnv) listening() bool {
-	env.svc.fleetMut.Lock()
-	defer env.svc.fleetMut.Unlock()
-	return len(env.svc.fleetServers) > 0
-}
-
-func get(t *testing.T, url string) (int, Status, error) {
-	t.Helper()
-	cli := &http.Client{Timeout: 5 * time.Second}
-	resp, err := cli.Get(url)
-	if err != nil {
-		return 0, Status{}, err
-	}
-	defer resp.Body.Close()
 	var st Status
-	if resp.StatusCode == http.StatusOK {
-		if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
-			t.Fatal(err)
-		}
+	if err := json.Unmarshal(bs, &st); err != nil {
+		t.Fatal(err)
 	}
-	return resp.StatusCode, st, nil
+	return st, true
 }
 
-func TestFleetListenerAuthorizesEachRequest(t *testing.T) {
-	tn := &fakeTailnet{addrs: []netip.Addr{loopback}, caps: map[netip.Addr]tailcfg.PeerCapMap{loopback: readGrant("read")}}
-	env := newFleetEnv(t, tn)
-	env.start(t)
-	waitFor(t, "the listener", env.listening)
-	waitFor(t, "the first check", func() bool { return env.svc.Status().Error != "" })
-
-	code, st, err := get(t, env.reportURL())
-	if err != nil || code != http.StatusOK || !strings.Contains(st.Error, "no shared folder") {
-		t.Errorf("granted request = %d, %+v, %v; want 200 and the status", code, st, err)
-	}
-
-	refusals := map[string]func(*fakeTailnet){
-		"no capability":   func(f *fakeTailnet) { f.caps = nil },
-		"other access":    func(f *fakeTailnet) { f.caps[loopback] = readGrant("write") },
-		"malformed grant": func(f *fakeTailnet) { f.caps[loopback] = tailcfg.PeerCapMap{CapAgentcfg: {`"read"`}} },
-		"another tailnet": func(f *fakeTailnet) {
-			f.err = errors.New("tailnet node laptop.other.ts.net. belongs to another tailnet")
-		},
-		"tailnet is down": func(f *fakeTailnet) { f.err = errors.New("tailscale is unavailable") },
-		"other capability": func(f *fakeTailnet) {
-			f.caps[loopback] = tailcfg.PeerCapMap{tailscale.CapSyncthing: {`{"access":"read"}`}}
-		},
-	}
-	for name, refuse := range refusals {
-		tn.set(func(f *fakeTailnet) {
-			f.caps = map[netip.Addr]tailcfg.PeerCapMap{loopback: readGrant("read")}
-			f.err = nil
-			refuse(f)
-		})
-		// Every path and method is refused before it is looked at.
-		for _, url := range []string{env.reportURL(), strings.TrimSuffix(env.reportURL(), fleetReportPath) + "/rest/system/config"} {
-			if code, _, err := get(t, url); err != nil || code != http.StatusForbidden {
-				t.Errorf("%s: GET %s = %d, %v; want 403", name, url, code, err)
-			}
-		}
-	}
-
-	// tailscaled becomes unavailable: the tailnet has no addresses, and
-	// nothing listens until they come back.
-	tn.set(func(f *fakeTailnet) {
-		f.caps = map[netip.Addr]tailcfg.PeerCapMap{loopback: readGrant("read")}
-		f.err = nil
-		f.addrs = nil
+func TestFleetSharesReportsThroughTheSpecFolder(t *testing.T) {
+	env := newTestEnv(t, func(cfg *config.Configuration) {
+		cfg.Options.AgentcfgFleetEnabled = true
+		cfg.Devices = append(cfg.Devices, config.DeviceConfiguration{DeviceID: peerID, Name: "peer"})
 	})
-	waitFor(t, "the listener to close", func() bool { return !env.listening() })
-	if _, _, err := get(t, env.reportURL()); err == nil {
-		t.Error("the report is served while the tailnet is unavailable")
+	writeFile(t, filepath.Join(env.folder, SpecFileName), testSpec)
+	env.start(t)
+
+	// This device shares its report in the folder that holds the spec.
+	own := env.reportPath(protocol.LocalDeviceID)
+	waitFor(t, "the shared report", func() bool {
+		st, ok := sharedStatus(t, own)
+		return ok && reportErrors(st) == 1
+	})
+	first, _ := sharedStatus(t, own)
+	// Syncthing is told about the write rather than left to its watcher.
+	ownSub := ReportsDir + "/" + protocol.LocalDeviceID.String() + ".json"
+	waitFor(t, "a scan of the shared report", func() bool { return env.scans.count("agents", ownSub) == 1 })
+
+	// What the other devices shared arrives in the same directory.
+	peer := Status{Spec: "/home/peer/agentcfg.toml", Folder: "agents", Error: "peer error"}
+	bs, _ := json.Marshal(peer)
+	writeFile(t, env.reportPath(peerID), string(bs))
+	writeFile(t, env.reportPath(brokenID), "{not json")
+	writeFile(t, filepath.Join(filepath.Dir(own), peerID.String()+".sync-conflict-20261121-120000-AAAAAAA.json"), string(bs))
+	writeFile(t, filepath.Join(filepath.Dir(own), "notes.json"), "{}")
+
+	fleet, err := env.svc.Fleet()
+	if err != nil {
+		t.Fatal(err)
 	}
-	tn.set(func(f *fakeTailnet) { f.addrs = []netip.Addr{loopback} })
-	waitFor(t, "the listener to come back", env.listening)
-	if code, _, err := get(t, env.reportURL()); err != nil || code != http.StatusOK {
-		t.Errorf("after the tailnet came back: %d, %v; want 200", code, err)
+	if len(fleet) != 3 {
+		t.Fatalf("fleet = %+v; want this device and two peers", fleet)
+	}
+	if m := fleet[0]; !m.Self || m.DeviceID != protocol.LocalDeviceID.String() || reportErrors(*m.Status) != 1 || m.Error != "" {
+		t.Errorf("first member = %+v; want this device and its status", m)
+	}
+	// Sorted by name: the unnamed device comes before "peer".
+	if m := fleet[1]; m.DeviceID != brokenID.String() || m.Status != nil || !strings.Contains(m.Error, "invalid report") {
+		t.Errorf("broken peer = %+v; want an error", m)
+	}
+	if m := fleet[2]; m.Name != "peer" || m.Status == nil || m.Status.Error != "peer error" || m.Error != "" {
+		t.Errorf("peer = %+v; want its shared status", m)
 	}
 
-	// Turning the fleet view off closes the listener too.
-	w, err := env.cfg.Modify(func(cfg *config.Configuration) { cfg.Options.AgentcfgFleetEnabled = false })
+	// A run with the same result leaves the shared file alone, so the folder
+	// does not change on every check.
+	runs := env.runs.Load()
+	w, err := env.cfg.Modify(func(cfg *config.Configuration) { cfg.Options.AgentcfgIntervalS = 1800 })
 	if err != nil {
 		t.Fatal(err)
 	}
 	w.Wait()
-	waitFor(t, "the listener to close", func() bool { return !env.listening() })
+	waitFor(t, "another run", func() bool { return env.runs.Load() > runs && env.svc.Status().Report != nil })
+	if again, _ := sharedStatus(t, own); !again.Report.CheckedAt.Equal(first.Report.CheckedAt) {
+		t.Errorf("shared report rewritten with the same result: checked at %v, then %v", first.Report.CheckedAt, again.Report.CheckedAt)
+	}
+
+	// Turning the fleet view off withdraws this device's report, and only it.
+	w, err = env.cfg.Modify(func(cfg *config.Configuration) { cfg.Options.AgentcfgFleetEnabled = false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Wait()
+	waitFor(t, "the report to be withdrawn", func() bool {
+		_, ok := sharedStatus(t, own)
+		return !ok
+	})
+	if _, ok := sharedStatus(t, env.reportPath(peerID)); !ok {
+		t.Error("a peer's report was removed")
+	}
+	waitFor(t, "a scan of the removal", func() bool { return env.scans.count("agents", ownSub) == 2 })
+	if _, err := env.svc.Fleet(); !errors.Is(err, errFleetDisabled) {
+		t.Errorf("Fleet while disabled: %v; want %v", err, errFleetDisabled)
+	}
 }
 
-func TestFleetCollectsPeerReports(t *testing.T) {
-	// The peer serves its report to the aggregator, which connects from
-	// the loopback address.
-	peerTailnet := &fakeTailnet{addrs: []netip.Addr{loopback}, caps: map[netip.Addr]tailcfg.PeerCapMap{loopback: readGrant("read")}}
-	peer := newFleetEnv(t, peerTailnet)
-	peer.start(t)
-	waitFor(t, "the peer's listener", peer.listening)
-	waitFor(t, "the peer's check", func() bool { return peer.svc.Status().Error != "" })
+func TestFleetDoesNotShareFromAReceiveOnlyFolder(t *testing.T) {
+	env := newTestEnv(t, func(cfg *config.Configuration) {
+		cfg.Options.AgentcfgFleetEnabled = true
+		cfg.Folders[0].Type = config.FolderTypeReceiveOnly
+	})
+	writeFile(t, filepath.Join(env.folder, SpecFileName), testSpec)
+	env.start(t)
+	waitFor(t, "the first check", func() bool { return env.svc.Status().Report != nil })
 
-	aggTailnet := &fakeTailnet{nodes: []tailscale.Node{
-		{ID: "n-peer", Name: "peer", Addrs: []netip.Addr{loopback}},
-		{ID: "n-silent", Name: "silent", Addrs: []netip.Addr{netip.MustParseAddr("127.0.0.2")}},
-	}}
-	agg := newFleetEnv(t, aggTailnet)
-	agg.svc.fleetPort = peer.svc.fleetPort
-
-	fleet, err := agg.svc.Fleet(context.Background())
+	fleet, err := env.svc.Fleet()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fleet) != 3 || fleet[0].Node != "" || fleet[0].Status == nil {
-		t.Fatalf("fleet = %+v; want this device first, then two peers", fleet)
+	if len(fleet) != 1 || !strings.Contains(fleet[0].Error, "receiveonly") {
+		t.Errorf("fleet = %+v; want only this device, saying why its report is not shared", fleet)
 	}
-	if m := fleet[1]; m.Name != "peer" || m.Status == nil || !strings.Contains(m.Status.Error, "no shared folder") || m.Error != "" {
-		t.Errorf("peer = %+v; want its report", m)
-	}
-	if m := fleet[2]; m.Name != "silent" || m.Status != nil || m.Error == "" {
-		t.Errorf("unreachable peer = %+v; want an error", m)
-	}
-
-	// The peer withdraws the grant.
-	peerTailnet.set(func(f *fakeTailnet) { f.caps = nil })
-	fleet, err = agg.svc.Fleet(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m := fleet[1]; m.Status != nil || !strings.Contains(m.Error, "refused") {
-		t.Errorf("peer without grant = %+v; want a refusal", m)
+	if _, ok := sharedStatus(t, env.reportPath(protocol.LocalDeviceID)); ok {
+		t.Error("the report was written into a receive-only folder")
 	}
 }

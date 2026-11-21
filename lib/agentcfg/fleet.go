@@ -180,6 +180,9 @@ func writeReport(f sharedFile, st Status) error {
 		return err
 	}
 	defer root.Close()
+	if err := checkReportsDir(root); err != nil {
+		return err
+	}
 	if err := root.MkdirAll(path.Dir(f.name), 0o755); err != nil {
 		return err
 	}
@@ -196,6 +199,28 @@ func writeReport(f sharedFile, st Status) error {
 		_ = root.Remove(tmp)
 	}
 	return err
+}
+
+// checkReportsDir refuses a reports directory reached through a symlink.
+// os.Root keeps it inside the folder, but Syncthing syncs a symlink rather
+// than what it points to, so a report written there would not reach the
+// others.
+func checkReportsDir(root *os.Root) error {
+	dir := ""
+	for _, part := range strings.Split(ReportsDir, "/") {
+		dir = path.Join(dir, part)
+		info, err := root.Lstat(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", dir)
+		}
+	}
+	return nil
 }
 
 func removeReport(f sharedFile) error {
@@ -234,15 +259,19 @@ func (s *Service) Fleet() ([]FleetMember, error) {
 	s.shareMut.Unlock()
 
 	folder, err := reportsFolderFor(cfg, st.Folder)
+	if err == nil && folder.noShare != nil {
+		// Known from the configuration, which share may not have seen yet.
+		self.Error = folder.noShare.Error()
+	}
+	var peers []FleetMember
+	if err == nil {
+		peers, err = readReports(folder.root, myID)
+	}
 	if err != nil {
 		if self.Error == "" {
 			self.Error = err.Error()
 		}
 		return []FleetMember{self}, nil
-	}
-	peers, err := readReports(folder.root, myID)
-	if err != nil {
-		return nil, err
 	}
 	for i := range peers {
 		peers[i].Name = deviceName(cfg, peers[i].id)
@@ -263,6 +292,9 @@ func readReports(folderRoot string, myID protocol.DeviceID) ([]FleetMember, erro
 		return nil, err
 	}
 	defer root.Close()
+	if err := checkReportsDir(root); err != nil {
+		return nil, err
+	}
 	dir, err := root.Open(ReportsDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -284,7 +316,7 @@ func readReports(folderRoot string, myID protocol.DeviceID) ([]FleetMember, erro
 		// Conflict copies and any other name than a device ID as we write
 		// it are not reports.
 		id, err := protocol.DeviceIDFromString(stem)
-		if err != nil || id.String() != stem || id == myID {
+		if err != nil || stem == "" || id.String() != stem || id == myID {
 			continue
 		}
 		m := FleetMember{DeviceID: stem, id: id}

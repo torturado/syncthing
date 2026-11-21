@@ -88,8 +88,8 @@ Out of scope:
   Nothing is written when the spec is not in a shared folder, or when that
   folder is receive-only or receive-encrypted on this device; the fleet view
   says why. Every report file is reached through `os.Root` at the folder's
-  root, so a symlink that another device synced into the folder cannot lead
-  a write, removal or read outside it.
+  root, and the reports directory must not be a symlink, so a symlink that
+  another device synced into the folder cannot redirect a write or read.
 - **A5. Peer reports are only read.** `GET /rest/agentcfg/fleet` takes no
   parameter. It reads the `.json` files of that directory whose name is a
   device ID, spelled as Syncthing prints it, other than ours. Each must be a
@@ -105,9 +105,9 @@ Out of scope:
 |---|---|---|
 | F1a. A device that shares the spec's folder. | It receives every shared report, as it receives the spec. | Trust assumptions. |
 | F1b. A receive-encrypted device of that folder. | It stores the reports encrypted and cannot read them. | Syncthing's untrusted-device encryption. |
-| F1c. A device that does not share the folder, a tailnet node or a LAN host. | It gets nothing: reports travel only as files of the folder, and nothing listens for them. |
-| F1e. A device of the folder syncs `.agentcfg` as a symlink to somewhere else. | Writing, removing and reading the reports fail with an error instead of following it. | A4. | A4, A5. |
+| F1c. A device that does not share the folder, a tailnet node or a LAN host. | It gets nothing: reports travel only as files of the folder, and nothing listens for them. | A4, A5. |
 | F1d. A device leaves the folder. | It keeps the copies it already received; it gets no new ones. Treat a report as readable by every device that ever shared the folder. | Trust assumptions. |
+| F1e. A device of the folder syncs `.agentcfg` or `.agentcfg/reports` as a symlink. | Writing and reading the reports fail with an error instead of following it, even to a place inside the folder, where Syncthing would not sync the report. | A4. |
 
 ### F2. Outages
 

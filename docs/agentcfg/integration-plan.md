@@ -163,9 +163,8 @@ changed since 2.1.5, so the packaged binary can take the database back.
     portatil's report within 3 s, `agentcfg apply` lists the removal, and uninstalling clears
     the error within 3 s.
 - **Pending:**
-  - docker, on 2026-11-27 if the others have no incidents;
-  - portatil: it was off, so it still runs the first fork build; install the current one and
-    regenerate its Syncthing theme.
+  - docker, on 2026-11-27 if the others have no incidents. portatil, which was off, moved to
+    the current build with the agent folders below.
 - **Fleet view, 2026-11-21:** casa, aimery, dockerpapa and prox run the fork's `main` at
   `58f004e13` (`v2.1.8-dev.17`, torturado/syncthing#9), which shares the reports through
   `~/.agents`.
@@ -188,7 +187,7 @@ changed since 2.1.5, so the packaged binary can take the database back.
     with `agentcfgSync`, and the fork shares `agentcfg-agents`, `agentcfg-claude` and
     `agentcfg-codex`. casa created them; the other three joined casa's offer.
   - The exclusions of the old `~/.agents/.stignore` live in `[sync.exclude]` in the spec. The
-    old `.stignore-shared` files stay on disk, unused. `~/.claude/mcp.json` is no longer synced.
+    old `.stignore-shared` files are removed. `~/.claude/mcp.json` is no longer synced.
   - Checks passed:
     - every device has the three folders at 100 % with no pull errors and no conflict copies of
       configuration;
@@ -198,10 +197,14 @@ changed since 2.1.5, so the packaged binary can take the database back.
   - On joining, each device's own fleet report already existed on the others, so 12 conflict
     copies of reports appeared once; they were removed. A new device has no report on the
     others yet, so it does not hit this.
+  - portatil joined the same day, when it came online: the same build and CLI, its old
+    folders removed, the others marked, the `[env]` line for `agentcfg.conf` added to its mise
+    configuration, and its Syncthing theme regenerated, as was casa's. Both themes show the
+    agentcfg row and panel. casa's fleet view shows the five reports, 0 errors, and `~/.agents`
+    holds the same 1050 files on casa and portatil.
   - Pending: docker, on stock Syncthing, keeps its old folders and no longer receives agent
     configuration until it moves to the fork on 2026-11-27 (mark the five, remove the old
-    folders); portatil joins when it comes online with the current build (remove its old
-    folders, mark the others).
+    folders).
 - **One repository, 2026-11-21:** agentcfg moved into the fork with its history:
   `internal/agentcfg` and `cmd/agentcfg`, with these documents in `docs/agentcfg`. The fork was
   its only user, and every change to the spec had to land in both repositories in order.

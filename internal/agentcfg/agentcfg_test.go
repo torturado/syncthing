@@ -13,6 +13,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -325,7 +326,8 @@ func TestApplyWritesThroughSymlinkAndKeepsComments(t *testing.T) {
 	if !strings.HasPrefix(string(after), "# managed by hand\nmodel = \"example-model\"\n") {
 		t.Errorf("comment or unrelated key lost:\n%s", after)
 	}
-	if info, _ := os.Stat(real); info.Mode().Perm() != 0o640 {
+	// Windows keeps no permission bits beyond read-only.
+	if info, _ := os.Stat(real); runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Errorf("mode changed to %v", info.Mode().Perm())
 	}
 	if strings.Contains(string(after), "fake-search-key") || strings.Contains(string(after), "notify-send") {

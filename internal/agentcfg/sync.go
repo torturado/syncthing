@@ -1,3 +1,9 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
 package agentcfg
 
 import (
@@ -6,10 +12,10 @@ import (
 	"io/fs"
 	"path/filepath"
 
-	"github.com/torturado/agentcfg/internal/claude"
-	"github.com/torturado/agentcfg/internal/codex"
-	"github.com/torturado/agentcfg/internal/model"
-	"github.com/torturado/agentcfg/internal/spec"
+	"github.com/syncthing/syncthing/internal/agentcfg/claude"
+	"github.com/syncthing/syncthing/internal/agentcfg/codex"
+	"github.com/syncthing/syncthing/internal/agentcfg/model"
+	"github.com/syncthing/syncthing/internal/agentcfg/spec"
 )
 
 // SyncFolder is a directory of agent configuration that the machines of a

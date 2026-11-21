@@ -1,3 +1,9 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // Package claude reads the Claude Code configuration that applies to every
 // directory under the user's home: user and managed settings, the plugins they
 // enable, the user and local MCP scopes in ~/.claude.json, and ~/.mcp.json.
@@ -17,7 +23,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/torturado/agentcfg/internal/model"
+	"github.com/syncthing/syncthing/internal/agentcfg/model"
 )
 
 const managedDir = "/etc/claude-code"

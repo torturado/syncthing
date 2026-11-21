@@ -1,3 +1,9 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // Package spec loads the desired state: the MCP servers every machine must
 // have, the only hooks and plugins allowed to exist, the machines that may
 // decrypt the shared secrets, and what stays out of the synced folders.
@@ -16,7 +22,7 @@ import (
 	"filippo.io/age"
 	"github.com/BurntSushi/toml"
 
-	"github.com/torturado/agentcfg/internal/model"
+	"github.com/syncthing/syncthing/internal/agentcfg/model"
 )
 
 type Server struct {

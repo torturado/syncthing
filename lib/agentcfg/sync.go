@@ -17,8 +17,7 @@ import (
 	"strings"
 	"time"
 
-	agentcfglib "github.com/torturado/agentcfg"
-
+	agentcfglib "github.com/syncthing/syncthing/internal/agentcfg"
 	"github.com/syncthing/syncthing/lib/config"
 	stfs "github.com/syncthing/syncthing/lib/fs"
 	"github.com/syncthing/syncthing/lib/ignore"

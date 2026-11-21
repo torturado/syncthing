@@ -1,3 +1,9 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // Package agentcfg checks and corrects the configuration of the AI coding
 // agents on a machine against a declared spec, so every machine in a fleet
 // runs the same MCP servers, no hook or plugin appears unnoticed, and no
@@ -18,12 +24,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/torturado/agentcfg/internal/check"
-	"github.com/torturado/agentcfg/internal/claude"
-	"github.com/torturado/agentcfg/internal/codex"
-	"github.com/torturado/agentcfg/internal/files"
-	"github.com/torturado/agentcfg/internal/model"
-	"github.com/torturado/agentcfg/internal/spec"
+	"github.com/syncthing/syncthing/internal/agentcfg/check"
+	"github.com/syncthing/syncthing/internal/agentcfg/claude"
+	"github.com/syncthing/syncthing/internal/agentcfg/codex"
+	"github.com/syncthing/syncthing/internal/agentcfg/files"
+	"github.com/syncthing/syncthing/internal/agentcfg/model"
+	"github.com/syncthing/syncthing/internal/agentcfg/spec"
 )
 
 // SchemaVersion is the version of the JSON form of Report and ApplyReport. It

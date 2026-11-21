@@ -1,3 +1,9 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // Package codex reads the Codex CLI configuration in $CODEX_HOME (default
 // ~/.codex) and the system file /etc/codex/config.toml.
 package codex
@@ -12,7 +18,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/torturado/agentcfg/internal/model"
+	"github.com/syncthing/syncthing/internal/agentcfg/model"
 )
 
 const systemConfig = "/etc/codex/config.toml"

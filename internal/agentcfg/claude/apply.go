@@ -1,3 +1,9 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
 package claude
 
 import (
@@ -10,9 +16,9 @@ import (
 	"os"
 	"slices"
 
-	"github.com/torturado/agentcfg/internal/jsonedit"
-	"github.com/torturado/agentcfg/internal/model"
-	"github.com/torturado/agentcfg/internal/spec"
+	"github.com/syncthing/syncthing/internal/agentcfg/jsonedit"
+	"github.com/syncthing/syncthing/internal/agentcfg/model"
+	"github.com/syncthing/syncthing/internal/agentcfg/spec"
 )
 
 // Plan computes the edits that bring Claude Code to the spec. It owns

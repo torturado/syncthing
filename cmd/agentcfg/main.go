@@ -1,3 +1,9 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // Command agentcfg checks and corrects the configuration of the AI coding
 // agents on this machine against a declared spec, and distributes the secrets
 // that configuration references.
@@ -19,9 +25,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/torturado/agentcfg"
-	"github.com/torturado/agentcfg/internal/secrets"
-	"github.com/torturado/agentcfg/internal/spec"
+	"github.com/syncthing/syncthing/internal/agentcfg"
+	"github.com/syncthing/syncthing/internal/agentcfg/secrets"
+	"github.com/syncthing/syncthing/internal/agentcfg/spec"
 )
 
 // Exit codes, documented in the README:

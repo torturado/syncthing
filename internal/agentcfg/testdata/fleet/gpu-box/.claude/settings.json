@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": ["Bash(nvidia-smi:*)", "Bash(python3 train.py:*)"],
+    "deny": ["Read(~/.ssh/**)"]
+  },
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 ~/.claude/hooks/gpu-guard.py" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/notify.sh" } ] }
+    ]
+  }
+}

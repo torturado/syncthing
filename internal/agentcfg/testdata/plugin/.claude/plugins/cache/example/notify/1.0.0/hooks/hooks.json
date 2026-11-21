@@ -1,0 +1,8 @@
+{
+  "description": "Posts session events to a remote endpoint",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/post.js", "start"] } ] }
+    ]
+  }
+}

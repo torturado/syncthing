@@ -153,7 +153,12 @@ func TestFleetSharesReportsThroughTheSpecFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Wait()
-	waitFor(t, "another run", func() bool { return env.runs.Load() > runs && env.svc.Status().Report != nil })
+	waitFor(t, "another run", func() bool { return env.runs.Load() > runs })
+	// The count goes up as the run starts; it ends, and has shared what it
+	// found, once it lets go of runMut. A spec removed before then would
+	// make the same run share an error.
+	env.svc.runMut.Lock()
+	env.svc.runMut.Unlock() //nolint:staticcheck // waits for the run to end
 	if again, _ := sharedStatus(t, own); !again.Report.CheckedAt.Equal(first.Report.CheckedAt) {
 		t.Errorf("shared report rewritten with the same result: checked at %v, then %v", first.Report.CheckedAt, again.Report.CheckedAt)
 	}

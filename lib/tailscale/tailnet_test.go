@@ -248,9 +248,6 @@ func TestTailnetResolvesTaggedPeers(t *testing.T) {
 	if devices := tn.Devices(); len(devices) != 1 || !slices.Equal(devices[srv.id], want) {
 		t.Errorf("Devices() = %v, want only %v", devices, want)
 	}
-	if nodes := tn.Nodes(); len(nodes) != 1 || nodes[0].ID != "n-tagged" || nodes[0].Name != "n-tagged" {
-		t.Errorf("Nodes() = %+v, want only n-tagged", nodes)
-	}
 	tn.mut.Lock()
 	if _, ok := tn.peers["n-tagged"]; !ok || len(tn.peers) != 1 {
 		t.Errorf("peer table %v, want only the tagged, unexpired peer of our tailnet", tn.peers)
@@ -280,7 +277,7 @@ func TestTailnetResolvesTaggedPeers(t *testing.T) {
 	})
 	api.stop(errors.New("connection refused"))
 	waitFor(t, "the failure to be reported", func() bool {
-		return tn.Error() != nil && len(tn.Devices()) == 0 && len(tn.Nodes()) == 0
+		return tn.Error() != nil && len(tn.Devices()) == 0
 	})
 }
 

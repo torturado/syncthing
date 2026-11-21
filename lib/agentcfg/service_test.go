@@ -61,7 +61,7 @@ func newTestEnv(t *testing.T, mutate func(*config.Configuration)) *testEnv {
 	env.cfg = config.Wrap("", cfg, protocol.LocalDeviceID, env.evLogger)
 	go env.cfg.Serve(ctx)
 
-	env.svc = New(env.cfg, env.evLogger, nil)
+	env.svc = New(env.cfg, env.evLogger)
 	env.svc.home = env.home
 	// Counts the runs, and keeps the tailscale CLI out of the tests.
 	env.svc.hostNames = func(context.Context) []string {

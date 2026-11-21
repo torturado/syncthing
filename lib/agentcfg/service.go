@@ -7,7 +7,8 @@
 // Package agentcfg runs github.com/torturado/agentcfg inside Syncthing: it
 // checks the configuration of the AI coding agents in this user's home
 // against a spec that usually travels in a shared folder, corrects it when
-// asked to, and serves the report to the GUI and, when enabled, to the tailnet.
+// asked to, and serves the report to the GUI and, when enabled, shares it with
+// the other devices of that folder.
 //
 // The security behaviour is specified in
 // docs/tailscale/agentcfg-threat-model.md.
@@ -71,22 +72,19 @@ type Status struct {
 }
 
 // Service checks the agents' configuration while agentcfgEnabled is set,
-// and serves the fleet listener while agentcfgFleetEnabled is also set. It
-// is a suture service.
+// and shares the report while agentcfgFleetEnabled is also set. It is a
+// suture service.
 type Service struct {
 	*suture.Supervisor
 
 	cfg      config.Wrapper
 	evLogger events.Logger
-	tailnet  Tailnet
 
 	// Fixed outside tests.
 	home      string // empty for the user's home
 	hostNames func(context.Context) []string
-	fleetPort uint16
 
 	checksChanged chan struct{}
-	fleetChanged  chan struct{}
 
 	// runMut serializes checks and applies; stamps is what the watched
 	// files looked like before the last check.
@@ -97,29 +95,25 @@ type Service struct {
 	status    Status
 	signature string
 
-	fleetMut     sync.Mutex
-	fleetServers map[string]*fleetServer
+	// shareMut guards the shared report: the file written, what it said,
+	// and why it could not be shared.
+	shareMut   sync.Mutex
+	sharedPath string
+	sharedSig  string
+	shareErr   string
 }
 
-// New returns the agentcfg service. tailnet may be nil, which disables the
-// fleet view.
-func New(cfg config.Wrapper, evLogger events.Logger, tailnet Tailnet) *Service {
+// New returns the agentcfg service.
+func New(cfg config.Wrapper, evLogger events.Logger) *Service {
 	s := &Service{
 		Supervisor:    suture.New("agentcfg.Service", svcutil.SpecWithDebugLogger()),
 		cfg:           cfg,
 		evLogger:      evLogger,
-		tailnet:       tailnet,
 		hostNames:     agentcfglib.DefaultHostNames,
-		fleetPort:     FleetPort,
 		checksChanged: make(chan struct{}, 1),
-		fleetChanged:  make(chan struct{}, 1),
-		fleetServers:  make(map[string]*fleetServer),
 		signature:     signature(Status{}),
 	}
 	s.Add(svcutil.AsService(s.serveChecks, fmt.Sprintf("%s/serveChecks", s)))
-	if tailnet != nil {
-		s.Add(svcutil.AsService(s.serveFleet, fmt.Sprintf("%s/serveFleet", s)))
-	}
 	return s
 }
 
@@ -141,6 +135,7 @@ func (s *Service) serveChecks(ctx context.Context) error {
 			return nil
 		}
 		s.publish(Status{})
+		s.share(Status{})
 		select {
 		case <-ctx.Done():
 			return nil
@@ -335,6 +330,7 @@ func (s *Service) checkLocked(ctx context.Context, st Status, opts agentcfglib.O
 		}
 	}
 	s.publish(st)
+	s.share(st)
 	return files
 }
 
@@ -404,11 +400,9 @@ func writtenPaths(report agentcfglib.ApplyReport) []string {
 
 func (s *Service) CommitConfiguration(from, to config.Configuration) bool {
 	if !sameSettings(from, to) {
-		for _, c := range []chan struct{}{s.checksChanged, s.fleetChanged} {
-			select {
-			case c <- struct{}{}:
-			default:
-			}
+		select {
+		case s.checksChanged <- struct{}{}:
+		default:
 		}
 	}
 	return true

@@ -61,6 +61,12 @@ func reportsDir(cfg config.Configuration, folderID string) (string, error) {
 	return filepath.Join(root, filepath.FromSlash(ReportsDir)), nil
 }
 
+// sharedFile is where this device's report is shared.
+type sharedFile struct {
+	folder string // folder ID
+	path   string // on disk
+}
+
 // share keeps this device's status in the folder that holds the spec while
 // the fleet view is on, and removes it otherwise. The file is rewritten only
 // when what the status says changes, so the folder sees one change per
@@ -75,43 +81,62 @@ func (s *Service) share(st Status) {
 			folderID = target.folder
 		}
 	}
-	var path string
+	var current sharedFile
 	dir, err := reportsDir(cfg, folderID)
 	if err == nil {
-		path = filepath.Join(dir, s.cfg.MyID().String()+".json")
+		current = sharedFile{folder: folderID, path: filepath.Join(dir, s.cfg.MyID().String()+".json")}
 	}
 	enabled := cfg.Options.AgentcfgEnabled && cfg.Options.AgentcfgFleetEnabled
 
 	s.shareMut.Lock()
 	defer s.shareMut.Unlock()
-	for _, old := range []string{s.sharedPath, path} {
-		if old != "" && (!enabled || old != path) {
-			if err := os.Remove(old); err == nil {
-				slog.Info("Removed the shared agentcfg report", slogutil.FilePath(old))
-			} else if !errors.Is(err, fs.ErrNotExist) {
-				slog.Warn("Failed to remove the shared agentcfg report", slogutil.FilePath(old), slogutil.Error(err))
-			}
+	for _, old := range []sharedFile{s.shared, current} {
+		if old.path == "" || enabled && old == current {
+			continue
+		}
+		if err := os.Remove(old.path); err == nil {
+			slog.Info("Removed the shared agentcfg report", slogutil.FilePath(old.path))
+			s.scanShared(old)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("Failed to remove the shared agentcfg report", slogutil.FilePath(old.path), slogutil.Error(err))
 		}
 	}
-	s.sharedPath, s.shareErr = "", ""
+	s.shared, s.shareErr = sharedFile{}, ""
 	if !enabled {
 		s.sharedSig = ""
 		return
 	}
-	if path == "" {
+	if current.path == "" {
 		s.shareErr = err.Error()
 		return
 	}
-	s.sharedPath = path
-	if sig := path + "\x02" + signature(st); sig != s.sharedSig {
-		if err := writeReport(path, st); err != nil {
-			slog.Warn("Failed to share the agentcfg report", slogutil.FilePath(path), slogutil.Error(err))
+	s.shared = current
+	if sig := current.path + "\x02" + signature(st); sig != s.sharedSig {
+		if err := writeReport(current.path, st); err != nil {
+			slog.Warn("Failed to share the agentcfg report", slogutil.FilePath(current.path), slogutil.Error(err))
 			s.shareErr = err.Error()
 			s.sharedSig = ""
 			return
 		}
 		s.sharedSig = sig
+		s.scanShared(current)
 	}
+}
+
+// scanShared tells Syncthing about a change to the shared report rather
+// than waiting for the folder's watcher, which may be off, or may start
+// only after the change, such as one made just after startup. A folder that
+// is not running yet scans the file when it starts.
+func (s *Service) scanShared(f sharedFile) {
+	if s.scanner == nil {
+		return
+	}
+	sub := ReportsDir + "/" + filepath.Base(f.path)
+	go func() {
+		if err := s.scanner.ScanFolderSubdirs(f.folder, []string{sub}); err != nil {
+			slog.Debug("Failed to scan the shared agentcfg report", slogutil.FilePath(f.path), slogutil.Error(err))
+		}
+	}()
 }
 
 // writeReport replaces the report file through a temporary name that

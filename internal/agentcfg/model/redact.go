@@ -14,7 +14,7 @@ import (
 
 const redacted = "REDACTED"
 
-const credentialName = `[A-Za-z0-9_-]*(?:authorization|bearer|token|secret|passw|api[-_]?key|cookie|credential|private[-_]?key)[A-Za-z0-9_-]*`
+const credentialName = `[A-Za-z0-9_-]*(?:authorization|bearer|token|secret|passw|api[-_]?key|cookie|credential|private[-_]?key)[A-Za-z0-9_-]*` //nolint:gosec // names of credentials to redact, not a credential
 
 var (
 	// urlPattern runs to the next quote, so URLs inside a JSON argument are

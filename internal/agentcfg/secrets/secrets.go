@@ -121,7 +121,7 @@ func Load(secretsPath, identityPath string) (Values, error) {
 // Save fails with fs.ErrExist instead of replacing it.
 func Save(secretsPath string, values Values, recipients []string, create bool) error {
 	if len(recipients) == 0 {
-		return fmt.Errorf("no age_recipient in the spec's [hosts]; nobody could decrypt the secrets")
+		return errors.New("no age_recipient in the spec's [hosts]; nobody could decrypt the secrets")
 	}
 	var parsed []age.Recipient
 	for _, recipient := range recipients {

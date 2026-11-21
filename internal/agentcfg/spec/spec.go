@@ -50,6 +50,7 @@ type Layer struct {
 
 type Host struct {
 	Layer
+
 	Roles []string `toml:"roles"`
 	// AgeRecipient is the machine's age public key; secrets.age is encrypted
 	// to every host that has one.
@@ -67,6 +68,7 @@ type Sync struct {
 // File is the spec as written. Hosts are keyed by hostname or tailnet name.
 type File struct {
 	Layer
+
 	Roles map[string]Layer `toml:"roles"`
 	Hosts map[string]Host  `toml:"hosts"`
 	Sync  Sync             `toml:"sync"`

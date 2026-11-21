@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/syncthing/syncthing/internal/agentcfg/secrets"
@@ -55,7 +56,8 @@ func TestEveryRecipientDecryptsAndShellsReadTheEnvironmentFile(t *testing.T) {
 		if _, err := secrets.Sync(got, envPath); err != nil {
 			t.Fatal(err)
 		}
-		if info, _ := os.Stat(envPath); info.Mode().Perm() != 0o600 {
+		// Windows has no Unix permissions to check.
+		if info, _ := os.Stat(envPath); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 			t.Errorf("environment file mode %v", info.Mode().Perm())
 		}
 		out, err := exec.Command("sh", "-c", `set -a; . "$0"; printf '%s %s' "$DEPLOY_TOKEN" "$SEARCH_API_KEY"`, envPath).Output()

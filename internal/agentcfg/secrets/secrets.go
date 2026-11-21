@@ -1,3 +1,9 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // Package secrets keeps the credentials that agent configuration references as
 // ${VAR}. They are stored in secrets.age, which is synced and encrypted to
 // every machine's age public key, and decrypted on each machine into an
@@ -20,7 +26,7 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/torturado/agentcfg/internal/files"
+	"github.com/syncthing/syncthing/internal/agentcfg/files"
 )
 
 var name = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

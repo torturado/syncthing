@@ -10,10 +10,15 @@ written.
 
 Supported agents: Claude Code and Codex CLI.
 
+It lives in the Syncthing fork, which also runs it on its own: the library is
+`internal/agentcfg`, the command `cmd/agentcfg`, and the Syncthing service `lib/agentcfg`.
+
 ## Install
 
+From a clone of the fork:
+
 ```sh
-go install github.com/torturado/agentcfg/cmd/agentcfg@latest
+CGO_ENABLED=0 go build -trimpath -o ~/.local/bin/agentcfg ./cmd/agentcfg
 ```
 
 ## Usage
@@ -193,6 +198,8 @@ with a new file. Only `set --create` starts a new one.
 
 ## Library
 
+`github.com/syncthing/syncthing/internal/agentcfg`, which only the fork can import:
+
 ```go
 report, err := agentcfg.Check(ctx, agentcfg.Options{SpecPath: path})
 plan, err := agentcfg.Plan(ctx, opts)    // what Apply would change
@@ -211,10 +218,10 @@ folders, err := agentcfg.SyncFolders(opts) // folders to sync and their ignore p
 ## Development
 
 ```sh
-go test ./...
+go test ./internal/agentcfg/... ./cmd/agentcfg/ ./lib/agentcfg/
 ```
 
-The fixtures in `testdata` are homes in known states: `clean` matches the spec with every
+The fixtures in `internal/agentcfg/testdata` are homes in known states: `clean` matches the spec with every
 credential referenced, `drifted` reproduces common drift (hooks reinstalled by another tool, an
 extra MCP server in a local scope, credentials written in the files, a changed URL), `plugin`
 enables plugins that carry a hook and a server, and `fleet` is a machine with its own servers,
@@ -222,4 +229,5 @@ hooks and permissions on top of a shared base. All values in them are fake.
 
 ## License
 
-MIT
+MPL-2.0, as the rest of Syncthing. Until it moved into the fork, agentcfg was MIT-licensed
+in its own repository, torturado/agentcfg, which is archived.

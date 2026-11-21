@@ -202,10 +202,17 @@ changed since 2.1.5, so the packaged binary can take the database back.
     configuration until it moves to the fork on 2026-11-27 (mark the five, remove the old
     folders); portatil joins when it comes online with the current build (remove its old
     folders, mark the others).
+- **One repository, 2026-11-21:** agentcfg moved into the fork with its history:
+  `internal/agentcfg` and `cmd/agentcfg`, with these documents in `docs/agentcfg`. The fork was
+  its only user, and every change to the spec had to land in both repositories in order.
+  torturado/agentcfg is archived; its `v0.2.0` is the last release there. The CLI is built from
+  the fork, `CGO_ENABLED=0 go build -trimpath -o agentcfg ./cmd/agentcfg`, and
+  `.github/workflows/agentcfg.yaml` runs its checks.
 
 ## Rules for keeping the fork cheap
 
-- agentcfg code lives in `lib/agentcfg`. Elsewhere, only registration: one line in
+- agentcfg code lives in `internal/agentcfg` (the library), `cmd/agentcfg` (the command) and
+  `lib/agentcfg` (the service), all new directories. Elsewhere, only registration: one line in
   `lib/syncthing`, routes in `lib/api`, options in `lib/config`, and one GUI template.
 - No changes to BEP or the database schema.
 - Rebase on every upstream release and record the conflicts. If the agentcfg part causes

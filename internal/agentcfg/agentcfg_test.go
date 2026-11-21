@@ -1,3 +1,9 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
 package agentcfg_test
 
 import (
@@ -13,7 +19,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/torturado/agentcfg"
+	"github.com/syncthing/syncthing/internal/agentcfg"
 )
 
 var secretVariables = []string{"SEARCH_API_KEY", "DEPLOY_TOKEN", "EVENTS_TOKEN"}

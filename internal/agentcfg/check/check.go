@@ -1,3 +1,9 @@
+// Copyright (C) 2026 The Syncthing Authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this file,
+// You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // Package check compares a machine's inventory with the spec.
 package check
 
@@ -9,8 +15,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/torturado/agentcfg/internal/model"
-	"github.com/torturado/agentcfg/internal/spec"
+	"github.com/syncthing/syncthing/internal/agentcfg/model"
+	"github.com/syncthing/syncthing/internal/agentcfg/spec"
 )
 
 type Severity string

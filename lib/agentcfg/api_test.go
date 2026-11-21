@@ -14,8 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	agentcfglib "github.com/torturado/agentcfg"
-
+	agentcfglib "github.com/syncthing/syncthing/internal/agentcfg"
 	"github.com/syncthing/syncthing/lib/config"
 )
 

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/syncthing/syncthing/internal/db"
 	"github.com/syncthing/syncthing/lib/config"
 	"github.com/syncthing/syncthing/lib/protocol"
 )
@@ -24,10 +25,30 @@ var (
 	brokenID = protocol.DeviceID{2}
 )
 
-// scanRecorder stands in for the model and records the scans asked for.
+// scanRecorder stands in for the model: it records the scans asked for and
+// serves the folders that other devices offer.
 type scanRecorder struct {
-	mut   sync.Mutex
-	scans []string
+	mut     sync.Mutex
+	scans   []string
+	pending map[protocol.DeviceID]map[string]db.PendingFolder
+}
+
+func (r *scanRecorder) PendingFolders(device protocol.DeviceID) (map[string]db.PendingFolder, error) {
+	r.mut.Lock()
+	defer r.mut.Unlock()
+	return r.pending[device], nil
+}
+
+func (r *scanRecorder) offer(device protocol.DeviceID, folder string) {
+	r.mut.Lock()
+	defer r.mut.Unlock()
+	if r.pending == nil {
+		r.pending = map[protocol.DeviceID]map[string]db.PendingFolder{}
+	}
+	if r.pending[device] == nil {
+		r.pending[device] = map[string]db.PendingFolder{}
+	}
+	r.pending[device][folder] = db.PendingFolder{}
 }
 
 func (r *scanRecorder) ScanFolderSubdirs(folder string, subs []string) error {
@@ -35,6 +56,9 @@ func (r *scanRecorder) ScanFolderSubdirs(folder string, subs []string) error {
 	defer r.mut.Unlock()
 	for _, sub := range subs {
 		r.scans = append(r.scans, folder+":"+sub)
+	}
+	if len(subs) == 0 {
+		r.scans = append(r.scans, folder+":")
 	}
 	return nil
 }

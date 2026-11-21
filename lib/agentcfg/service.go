@@ -5,10 +5,10 @@
 // You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Package agentcfg runs github.com/torturado/agentcfg inside Syncthing: it
-// checks the configuration of the AI coding agents in this user's home
-// against a spec that usually travels in a shared folder, corrects it when
-// asked to, and serves the report to the GUI and, when enabled, shares it with
-// the other devices of that folder.
+// shares the directories of the AI coding agents' configuration with the
+// devices marked for it, checks that configuration against a spec that
+// travels in one of them, corrects it when asked to, and serves the report
+// to the GUI and, when enabled, shares it with the other devices.
 //
 // The security behaviour is specified in
 // docs/tailscale/agentcfg-threat-model.md.
@@ -31,10 +31,12 @@ import (
 	"github.com/thejerf/suture/v4"
 	agentcfglib "github.com/torturado/agentcfg"
 
+	"github.com/syncthing/syncthing/internal/db"
 	"github.com/syncthing/syncthing/internal/slogutil"
 	"github.com/syncthing/syncthing/lib/config"
 	"github.com/syncthing/syncthing/lib/events"
 	"github.com/syncthing/syncthing/lib/fs"
+	"github.com/syncthing/syncthing/lib/protocol"
 	"github.com/syncthing/syncthing/lib/svcutil"
 )
 
@@ -52,7 +54,10 @@ const (
 	minIntervalS     = 60
 )
 
-var errDisabled = errors.New("agentcfg is disabled")
+var (
+	errDisabled = errors.New("agentcfg is disabled")
+	errNoSpec   = errors.New("no shared folder holds " + SpecFileName + " at its root; share one or set agentcfgSpecPath")
+)
 
 // Status is what the service knows about this device's agent
 // configuration. It is served as JSON.
@@ -69,17 +74,21 @@ type Status struct {
 	// the last apply failed or why automatic apply did not run.
 	LastApply  *agentcfglib.ApplyReport `json:"lastApply"`
 	ApplyError string                   `json:"applyError"`
+	// SyncError says why a folder of agent configuration is not shared
+	// with the devices marked for it.
+	SyncError string `json:"syncError"`
 }
 
-// Service checks the agents' configuration while agentcfgEnabled is set,
-// and shares the report while agentcfgFleetEnabled is also set. It is a
-// suture service.
+// Service shares the folders of agent configuration with the devices
+// marked agentcfgSync and checks that configuration while agentcfgEnabled
+// is set, and shares the report while agentcfgFleetEnabled is also set. It
+// is a suture service.
 type Service struct {
 	*suture.Supervisor
 
 	cfg      config.Wrapper
 	evLogger events.Logger
-	scanner  Scanner
+	model    Model
 
 	// Fixed outside tests.
 	home      string // empty for the user's home
@@ -104,20 +113,21 @@ type Service struct {
 	shareErr  string
 }
 
-// Scanner is the part of the model that the service tells about the report
-// it writes into a folder.
-type Scanner interface {
+// Model is the part of the model that the service uses: it tells it about
+// the files it writes into folders, and asks what the other devices offer.
+type Model interface {
 	ScanFolderSubdirs(folder string, subs []string) error
+	PendingFolders(device protocol.DeviceID) (map[string]db.PendingFolder, error)
 }
 
-// New returns the agentcfg service. scanner may be nil, which leaves the
-// shared report to the folder's watcher and rescans.
-func New(cfg config.Wrapper, evLogger events.Logger, scanner Scanner) *Service {
+// New returns the agentcfg service. model may be nil, which leaves what the
+// service writes to the folders' watchers and rescans.
+func New(cfg config.Wrapper, evLogger events.Logger, model Model) *Service {
 	s := &Service{
 		Supervisor:    suture.New("agentcfg.Service", svcutil.SpecWithDebugLogger()),
 		cfg:           cfg,
 		evLogger:      evLogger,
-		scanner:       scanner,
+		model:         model,
 		hostNames:     agentcfglib.DefaultHostNames,
 		checksChanged: make(chan struct{}, 1),
 		signature:     signature(Status{}),
@@ -259,16 +269,40 @@ func (s *Service) interval() time.Duration {
 	return time.Duration(max(seconds, minIntervalS)) * time.Second
 }
 
-// refresh applies the spec when automatic apply is on, then checks, and
-// publishes the result. It returns the spec it used and the files to watch.
+// refresh keeps the folders of agent configuration, applies the spec when
+// automatic apply is on, then checks, and publishes the result. It returns
+// the spec it used and the files to watch.
 func (s *Service) refresh(ctx context.Context) (specTarget, []string) {
 	s.runMut.Lock()
 	defer s.runMut.Unlock()
 
+	var syncErr error
+	switch target, err := findSpec(s.cfg.RawCopy()); {
+	case err == nil:
+		syncErr = s.syncFolders(target.path)
+	case errors.Is(err, errNoSpec):
+		// No exclusions until the spec arrives, as on a new device.
+		syncErr = s.syncFolders("")
+	default:
+		syncErr = fmt.Errorf("the spec that says what to exclude: %w", err)
+	}
+	if syncErr != nil {
+		slog.WarnContext(ctx, "Failed to share the agent configuration folders", slogutil.Error(syncErr))
+	}
+
+	// The folders just kept may hold the spec.
 	cfg := s.cfg.RawCopy()
 	target, err := findSpec(cfg)
 	prev := s.Status()
 	st := Status{Spec: target.path, Folder: target.folder, LastApply: prev.LastApply}
+	if syncErr != nil {
+		st.SyncError = syncErr.Error()
+	}
+	if errors.Is(err, errNoSpec) {
+		// Nothing to check against yet, as on a device that has not received
+		// the spec, which is not an error.
+		return target, s.checkLocked(ctx, st, agentcfglib.Options{Home: s.home})
+	}
 	if err != nil {
 		st.Error = err.Error()
 		return target, s.checkLocked(ctx, st, agentcfglib.Options{Home: s.home})
@@ -321,7 +355,8 @@ func (s *Service) Apply(ctx context.Context, dryRun bool) (agentcfglib.ApplyRepo
 }
 
 // checkLocked records how the watched files look, then checks unless st
-// already holds an error, and publishes st. It returns the watched files.
+// already holds an error or there is no spec, and publishes st. It returns
+// the watched files.
 func (s *Service) checkLocked(ctx context.Context, st Status, opts agentcfglib.Options) []string {
 	files, err := watchFiles(opts)
 	if err != nil {
@@ -330,7 +365,7 @@ func (s *Service) checkLocked(ctx context.Context, st Status, opts agentcfglib.O
 	// Recorded before checking, so that a write the check does not see
 	// still differs from the record.
 	s.stamps = stampFiles(files)
-	if st.Error == "" {
+	if st.Error == "" && opts.SpecPath != "" {
 		report, err := agentcfglib.Check(ctx, opts)
 		if err != nil {
 			st.Error = err.Error()
@@ -386,7 +421,7 @@ func (s *Service) publish(st Status) {
 // signature identifies what a status says, regardless of when it was made
 // and of the order of its findings.
 func signature(st Status) string {
-	parts := []string{st.Spec, st.Error, st.ApplyError}
+	parts := []string{st.Spec, st.Error, st.ApplyError, st.SyncError}
 	if st.Report != nil {
 		findings := make([]string, len(st.Report.Findings))
 		for i, f := range st.Report.Findings {
@@ -418,7 +453,8 @@ func (s *Service) CommitConfiguration(from, to config.Configuration) bool {
 }
 
 // sameSettings reports whether two configurations run agentcfg the same
-// way: the same options and the same folders to find the spec in.
+// way: the same options, the same devices to share the agent configuration
+// with, and the same folders to find the spec in and keep.
 func sameSettings(a, b config.Configuration) bool {
 	ao, bo := a.Options, b.Options
 	if ao.AgentcfgEnabled != bo.AgentcfgEnabled || ao.AgentcfgSpecPath != bo.AgentcfgSpecPath ||
@@ -426,8 +462,12 @@ func sameSettings(a, b config.Configuration) bool {
 		ao.AgentcfgFleetEnabled != bo.AgentcfgFleetEnabled {
 		return false
 	}
+	if !slices.Equal(syncPeers(a, protocol.EmptyDeviceID), syncPeers(b, protocol.EmptyDeviceID)) {
+		return false
+	}
 	return slices.EqualFunc(a.Folders, b.Folders, func(x, y config.FolderConfiguration) bool {
-		return x.ID == y.ID && x.Path == y.Path && x.FilesystemType == y.FilesystemType && x.Type == y.Type
+		return x.ID == y.ID && x.Path == y.Path && x.FilesystemType == y.FilesystemType && x.Type == y.Type &&
+			(!strings.HasPrefix(x.ID, SyncFolderPrefix) || slices.Equal(x.DeviceIDs(), y.DeviceIDs()))
 	})
 }
 
@@ -490,7 +530,7 @@ func findSpec(cfg config.Configuration) (specTarget, error) {
 	}
 	switch len(found) {
 	case 0:
-		return specTarget{}, errors.New("no shared folder holds " + SpecFileName + " at its root; share one or set agentcfgSpecPath")
+		return specTarget{}, errNoSpec
 	case 1:
 		return found[0], nil
 	default:

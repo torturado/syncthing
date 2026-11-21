@@ -1691,8 +1691,8 @@ angular.module('syncthing.core')
             return $scope.agentcfgEnabled() && $scope.config.options.agentcfgFleetEnabled;
         };
 
-        // agentcfgState is 'ok', 'drift', 'error' or, before the first
-        // check, 'pending'.
+        // agentcfgState is 'ok', 'drift', 'error', 'nospec' when there is no
+        // spec to check against or, before the first check, 'pending'.
         $scope.agentcfgState = function (status) {
             if (!status) {
                 return 'pending';
@@ -1701,7 +1701,7 @@ angular.module('syncthing.core')
                 return 'error';
             }
             if (!status.report) {
-                return 'pending';
+                return status.spec ? 'pending' : 'nospec';
             }
             return status.report.errors > 0 ? 'drift' : 'ok';
         };
@@ -1729,6 +1729,49 @@ angular.module('syncthing.core')
             }).error(function (data) {
                 $scope.agentcfg.fleetError = data;
             });
+        };
+
+        // agentcfgSummary is agentcfgState, or 'error' while a folder of
+        // agent configuration cannot be shared.
+        $scope.agentcfgSummary = function (status) {
+            return status && status.syncError ? 'error' : $scope.agentcfgState(status);
+        };
+
+        // isAgentcfgSyncFolder reports whether a folder is one that agentcfg
+        // keeps for the agent configuration, which it adds itself.
+        $scope.isAgentcfgSyncFolder = function (folderID) {
+            return folderID.indexOf('agentcfg-') === 0;
+        };
+
+        // agentcfgSyncOffers returns the devices that offer their agent
+        // configuration without this device syncing it with them.
+        $scope.agentcfgSyncOffers = function () {
+            var offers = [];
+            for (var folderID in $scope.pendingFolders) {
+                if (!$scope.isAgentcfgSyncFolder(folderID)) {
+                    continue;
+                }
+                for (var deviceID in $scope.pendingFolders[folderID].offeredBy) {
+                    var device = $scope.devices[deviceID];
+                    if (device && !device.agentcfgSync && !device.untrusted && offers.indexOf(deviceID) < 0) {
+                        offers.push(deviceID);
+                    }
+                }
+            }
+            return offers;
+        };
+
+        $scope.agentcfgSyncWith = function (deviceID) {
+            $scope.devices[deviceID].agentcfgSync = true;
+            $scope.saveConfig();
+        };
+
+        $scope.agentcfgDismissOffer = function (deviceID) {
+            for (var folderID in $scope.pendingFolders) {
+                if ($scope.isAgentcfgSyncFolder(folderID) && deviceID in $scope.pendingFolders[folderID].offeredBy) {
+                    $scope.dismissPendingFolder(folderID, deviceID);
+                }
+            }
         };
 
         $scope.showAgentcfg = function () {
@@ -2094,6 +2137,7 @@ angular.module('syncthing.core')
             if ($scope.currentDevice.untrusted) {
                 $scope.currentDevice.introducer = false;
                 $scope.currentDevice.autoAcceptFolders = false;
+                $scope.currentDevice.agentcfgSync = false;
             }
         }
 

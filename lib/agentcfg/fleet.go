@@ -155,12 +155,18 @@ func (s *Service) share(st Status) {
 // only after the change, such as one made just after startup. A folder that
 // is not running yet scans the file when it starts.
 func (s *Service) scanShared(f sharedFile) {
-	if s.scanner == nil {
+	s.scan(f.folder, []string{f.name})
+}
+
+// scan asks for a scan of subs in a folder, or of all of it when subs is
+// empty, without waiting for it.
+func (s *Service) scan(folder string, subs []string) {
+	if s.model == nil {
 		return
 	}
 	go func() {
-		if err := s.scanner.ScanFolderSubdirs(f.folder, []string{f.name}); err != nil {
-			slog.Debug("Failed to scan the shared agentcfg report", slogutil.FilePath(f.path()), slogutil.Error(err))
+		if err := s.model.ScanFolderSubdirs(folder, subs); err != nil {
+			slog.Debug("Failed to scan after an agentcfg change", slog.String("folder", folder), slog.Any("subs", subs), slogutil.Error(err))
 		}
 	}()
 }

@@ -115,18 +115,17 @@ and CSRF checks as the rest of the REST API. An `AgentConfigChanged` event goes 
 **B4. GUI.** A status badge for this device and a findings table, built with the existing
 Angular modal patterns in `gui/default`. No new frontend dependencies.
 
-**B5. Fleet view.** The servers' GUI listens on 127.0.0.1, so it cannot be used for this.
-- **Listener:** each device opens a separate, tailnet-only HTTP listener that serves only the
-  report.
-- **Authorization:** each request is authorized with `WhoIs` against its own capability, not
-  the Syncthing API key.
-- **Capability name:** the capability needs a namespace the fork owns, for example
-  `github.com/torturado/cap/agentcfg` with `{"access": "read"}`. `syncthing.net/cap/...` belongs
-  to upstream.
-- **View:** desktop aggregates the peers' reports in its GUI.
-- **Remote apply is out of scope.** It needs a separate `apply` access level and its own review.
-- **Before any code:** write a threat-model addendum in the same style as
-  `docs/tailscale/threat-model.md`.
+**B5. Fleet view.** Each device shares its report as `.agentcfg/reports/<device ID>.json` in
+the folder that holds the spec, rewritten when its result changes, and the GUI shows the reports
+that arrived there. It needs no Tailscale setup and works without Tailscale.
+- **Who reads:** the devices of that folder, which already read the spec. A receive-encrypted
+  device cannot.
+- **Remote apply is out of scope.** A shared report is only read and shown.
+- The first version served reports on a tailnet-only listener, authorized with `WhoIs`, a
+  `tag:syncthing` tag on every node and a policy grant (torturado/syncthing#7). It was replaced
+  (torturado/syncthing#9) because tagging every machine in the Tailscale admin was too much
+  setup.
+- `docs/tailscale/agentcfg-threat-model.md` in the fork covers both the checks and the fleet view.
 
 **B6. Notification.** A GUI notice when a device leaves the desired state.
 
@@ -165,11 +164,23 @@ changed since 2.1.5, so the packaged binary can take the database back.
     the error within 3 s.
 - **Pending:**
   - prod, on 2026-11-27 if the others have no incidents;
-  - the fleet view: tagging the six nodes `tag:syncthing` and desktop also `tag:fleet-admin`, then
-    the `tailscaled`-stopped and fleet checks. The tailnet policy already has both tags'
-    owners and the grant from the threat model, and `agentcfgFleetEnabled` is on in the five
-    machines. Until the nodes are tagged, every listener answers 403 to desktop and refuses
-    connections on the LAN address, which is the authorization check for an untagged node.
+  - laptop: it was off, so it still runs the first fork build; install the current one and
+    regenerate its Syncthing theme.
+- **Fleet view, 2026-11-21:** desktop, gpu-box, server-a and server-b run the fork's `main` at
+  `58f004e13` (`v2.1.8-dev.17`, torturado/syncthing#9), which shares the reports through
+  `~/.agents`.
+  - desktop's fleet view shows all four reports, and nothing listens on port 22100;
+  - a server added to gpu-box's `~/.claude.json` shows in desktop's fleet view in 3 s and clears in
+    3 s once removed;
+  - desktop's Syncthing theme, a third-party one, keeps its own copy of
+    the GUI's `index.html`, taken when the theme is applied. A copy from before the fork hides the
+    agentcfg row and panel; applying the theme again, or running the theme's
+    `syncthing-theme.sh generate`, takes a new copy.
+  - prod, on stock Syncthing, receives the report files with the rest of the folder.
+  - The `github.com/torturado/cap/agentcfg` grant is removed from the tailnet policy. The tags
+    the first version needed stay (`tag:syncthing` on the six nodes, `tag:fleet-admin` on desktop):
+    a tagged node returns to a user only by logging in again, and the fork's Tailscale
+    integration uses `tag:syncthing`.
 
 ## Rules for keeping the fork cheap
 
@@ -187,7 +198,7 @@ changed since 2.1.5, so the packaged binary can take the database back.
 | agentcfg suite | green, including the A2–A5 fixtures |
 | Interoperability | a stock Syncthing peer keeps syncing with a fork peer |
 | Drift injection: `herdr integration install claude` on laptop | shows in desktop's fleet view within 1 min; with `agentcfgApply = auto`, corrected within 1 min |
-| Authorization | a tailnet node without the capability gets 403 from the report listener; with `tailscaled` stopped the listener is closed and syncing is unaffected |
+| Fleet transport | reports arrive through the spec folder with no Tailscale tag or grant; nothing listens on port 22100 |
 | Fleet | all six machines report zero errors |
 
 ## Open questions

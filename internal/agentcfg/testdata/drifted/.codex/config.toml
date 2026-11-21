@@ -1,0 +1,17 @@
+[mcp_servers.search]
+url = "https://search.example.com/v2/mcp"
+
+[mcp_servers.search.http_headers]
+X-API-Key = "fake-search-key"
+
+[mcp_servers.deploy]
+url = "https://deploy.example.ts.net/mcp"
+bearer_token_env_var = "DEPLOY_TOKEN"
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "notify-send done"
+
+[hooks.state."file:/home/user/.codex/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"

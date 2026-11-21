@@ -1,0 +1,8 @@
+{
+  "env": { "ANTHROPIC_AUTH_TOKEN": "fake-proxy-token" },
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "^(startup|resume)$", "hooks": [ { "type": "command", "command": "bash '/home/user/.claude/hooks/herdr-agent-state.sh' session", "timeout": 10 } ] }
+    ]
+  }
+}

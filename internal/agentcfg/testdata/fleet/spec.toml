@@ -1,0 +1,23 @@
+# Shared by every machine.
+[mcp_servers.search]
+url = "https://search.example.com/mcp"
+headers = { "X-API-Key" = "${SEARCH_API_KEY}" }
+
+[hooks]
+claude = ["bash ~/.claude/hooks/notify.sh"]
+
+[roles.build]
+mcp_servers.registry = { url = "https://registry.example.ts.net/mcp", agents = ["codex"] }
+
+[hosts.aimery]
+roles = ["build"]
+age_recipient = "age1l8wyy2hyrl8wql07vaszmg85e5z0mej2w6vph872t9sqdc3ksd7q8rfnxx"
+hooks = { claude = ["python3 ~/.claude/hooks/gpu-guard.py"] }
+
+[hosts.aimery.mcp_servers.gpu]
+command = "gpu-mcp"
+args = ["--device", "0"]
+agents = ["claude"]
+
+[hosts.casa]
+age_recipient = "age16hwlklqdmgde3z6ajuj9pf3x67pvv8uwnq30wt36kwv33g5xmq3qumjc9a"

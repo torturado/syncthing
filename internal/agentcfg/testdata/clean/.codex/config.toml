@@ -1,0 +1,20 @@
+model = "example-model"
+
+[mcp_servers.search]
+url = "https://search.example.com/mcp"
+env_http_headers = { "X-API-Key" = "SEARCH_API_KEY" }
+
+[mcp_servers.deploy]
+url = "https://deploy.example.ts.net/mcp"
+bearer_token_env_var = "DEPLOY_TOKEN"
+
+[mcp_servers.device]
+command = "npx"
+args = ["-y", "device-mcp"]
+enabled = false
+
+[projects."/home/user/project"]
+trust_level = "trusted"
+
+[hooks.state."file:/home/user/.codex/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"

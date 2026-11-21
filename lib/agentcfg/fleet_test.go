@@ -98,7 +98,8 @@ func TestFleetSharesReportsThroughTheSpecFolder(t *testing.T) {
 	// A report must be one JSON value and nothing after it.
 	writeFile(t, env.reportPath(brokenID), `{"spec": "x"} trailing`)
 	// Another spelling of a device ID is not a report.
-	writeFile(t, filepath.Join(filepath.Dir(own), strings.ToLower(peerID.String())+".json"), string(bs))
+	writeFile(t, filepath.Join(filepath.Dir(own), strings.ReplaceAll(peerID.String(), "-", "")+".json"), string(bs))
+	writeFile(t, filepath.Join(filepath.Dir(own), ".json"), string(bs))
 	writeFile(t, filepath.Join(filepath.Dir(own), peerID.String()+".sync-conflict-20261121-120000-AAAAAAA.json"), string(bs))
 	writeFile(t, filepath.Join(filepath.Dir(own), "notes.json"), "{}")
 
@@ -152,13 +153,14 @@ func TestFleetSharesReportsThroughTheSpecFolder(t *testing.T) {
 		_, ok := sharedStatus(t, own)
 		return !ok
 	})
+	waitFor(t, "a scan of the withdrawal", func() bool { return env.scans.count("agents", ownSub) == 2 })
 	writeFile(t, spec, testSpec)
 	rerun()
 	waitFor(t, "the report to come back with the spec", func() bool {
 		st, ok := sharedStatus(t, own)
 		return ok && reportErrors(st) == 1
 	})
-	scans := env.scans.count("agents", ownSub)
+	waitFor(t, "a scan of the new report", func() bool { return env.scans.count("agents", ownSub) == 3 })
 
 	// Turning the fleet view off withdraws this device's report, and only it.
 	w, err = env.cfg.Modify(func(cfg *config.Configuration) { cfg.Options.AgentcfgFleetEnabled = false })
@@ -173,7 +175,7 @@ func TestFleetSharesReportsThroughTheSpecFolder(t *testing.T) {
 	if _, ok := sharedStatus(t, env.reportPath(peerID)); !ok {
 		t.Error("a peer's report was removed")
 	}
-	waitFor(t, "a scan of the removal", func() bool { return env.scans.count("agents", ownSub) == scans+1 })
+	waitFor(t, "a scan of the removal", func() bool { return env.scans.count("agents", ownSub) == 4 })
 	if _, err := env.svc.Fleet(); !errors.Is(err, errFleetDisabled) {
 		t.Errorf("Fleet while disabled: %v; want %v", err, errFleetDisabled)
 	}
@@ -213,14 +215,14 @@ func TestFleetStaysInsideTheFolder(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(outside, "reports", peerID.String()+".json"), `{"spec": "outside"}`)
 	if err := os.Symlink(outside, filepath.Join(env.folder, ".agentcfg")); err != nil {
-		t.Fatal(err)
+		t.Skip("symlinks unavailable:", err)
 	}
 	env.start(t)
 	waitFor(t, "the first check", func() bool { return env.svc.Status().Report != nil })
 
 	fleet, err := env.svc.Fleet()
-	if err == nil && (len(fleet) != 1 || fleet[0].Error == "") {
-		t.Errorf("fleet = %+v; want only this device, with the error that kept its report in", fleet)
+	if err != nil || len(fleet) != 1 || fleet[0].Status == nil || fleet[0].Error == "" {
+		t.Errorf("fleet = %+v, %v; want only this device, with the error that kept its report in", fleet, err)
 	}
 	entries, err := os.ReadDir(filepath.Join(outside, "reports"))
 	if err != nil || len(entries) != 1 {

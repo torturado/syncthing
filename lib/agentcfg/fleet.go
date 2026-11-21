@@ -8,6 +8,7 @@ package agentcfg
 
 import (
 	"cmp"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,31 +42,49 @@ func (s *Service) fleetEnabled() bool {
 	return opts.AgentcfgEnabled && opts.AgentcfgFleetEnabled
 }
 
-// reportsDir returns the reports directory of a shared folder, or why this
-// device cannot share its report there.
-func reportsDir(cfg config.Configuration, folderID string) (string, error) {
+// reportsFolder is the folder that holds the spec, as far as the fleet
+// view is concerned.
+type reportsFolder struct {
+	id   string
+	root string // on disk
+	// noShare says why this device cannot share its report there; it can
+	// still read the others'.
+	noShare error
+}
+
+// reportsFolderFor returns a folder's reports location, or why there is
+// none.
+func reportsFolderFor(cfg config.Configuration, folderID string) (reportsFolder, error) {
 	if folderID == "" {
-		return "", errors.New("the spec is not in a shared folder, so there is nowhere to share the report")
+		return reportsFolder{}, errors.New("the spec is not in a shared folder, so there is nowhere to share the report")
 	}
 	folder, _, ok := cfg.Folder(folderID)
 	if !ok {
-		return "", fmt.Errorf("folder %s is not configured", folderID)
+		return reportsFolder{}, fmt.Errorf("folder %s is not configured", folderID)
 	}
-	switch folder.Type {
-	case config.FolderTypeReceiveOnly, config.FolderTypeReceiveEncrypted:
-		return "", fmt.Errorf("folder %s is %s here, so this device's report would not reach the others", folderID, folder.Type)
+	if folder.Type == config.FolderTypeReceiveEncrypted {
+		return reportsFolder{}, fmt.Errorf("folder %s is receive-encrypted here, so its reports cannot be read", folderID)
 	}
 	root, err := stfs.ExpandTilde(folder.Path)
 	if err != nil {
-		return "", err
+		return reportsFolder{}, err
 	}
-	return filepath.Join(root, filepath.FromSlash(ReportsDir)), nil
+	f := reportsFolder{id: folderID, root: root}
+	if folder.Type == config.FolderTypeReceiveOnly {
+		f.noShare = fmt.Errorf("folder %s is receive-only here, so this device's report would not reach the others", folderID)
+	}
+	return f, nil
 }
 
 // sharedFile is where this device's report is shared.
 type sharedFile struct {
 	folder string // folder ID
-	path   string // on disk
+	root   string // the folder's root on disk
+	name   string // within the folder, slash-separated
+}
+
+func (f sharedFile) path() string {
+	return filepath.Join(f.root, filepath.FromSlash(f.name))
 }
 
 // share keeps this device's status in the folder that holds the spec while
@@ -82,38 +102,45 @@ func (s *Service) share(st Status) {
 		}
 	}
 	var current sharedFile
-	dir, err := reportsDir(cfg, folderID)
+	folder, err := reportsFolderFor(cfg, folderID)
 	if err == nil {
-		current = sharedFile{folder: folderID, path: filepath.Join(dir, s.cfg.MyID().String()+".json")}
+		err = folder.noShare
+	}
+	if err == nil {
+		current = sharedFile{folder: folder.id, root: folder.root, name: path.Join(ReportsDir, s.cfg.MyID().String()+".json")}
 	}
 	enabled := cfg.Options.AgentcfgEnabled && cfg.Options.AgentcfgFleetEnabled
 
 	s.shareMut.Lock()
 	defer s.shareMut.Unlock()
 	for _, old := range []sharedFile{s.shared, current} {
-		if old.path == "" || enabled && old == current {
+		if old.root == "" || enabled && old == current {
 			continue
 		}
-		if err := os.Remove(old.path); err == nil {
-			slog.Info("Removed the shared agentcfg report", slogutil.FilePath(old.path))
+		if err := removeReport(old); err == nil {
+			slog.Info("Removed the shared agentcfg report", slogutil.FilePath(old.path()))
 			s.scanShared(old)
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			slog.Warn("Failed to remove the shared agentcfg report", slogutil.FilePath(old.path), slogutil.Error(err))
+			slog.Warn("Failed to remove the shared agentcfg report", slogutil.FilePath(old.path()), slogutil.Error(err))
 		}
+	}
+	if !enabled || current != s.shared {
+		// What was shared is gone, so the next report is written whatever
+		// it says.
+		s.sharedSig = ""
 	}
 	s.shared, s.shareErr = sharedFile{}, ""
 	if !enabled {
-		s.sharedSig = ""
 		return
 	}
-	if current.path == "" {
+	if current.root == "" {
 		s.shareErr = err.Error()
 		return
 	}
 	s.shared = current
-	if sig := current.path + "\x02" + signature(st); sig != s.sharedSig {
-		if err := writeReport(current.path, st); err != nil {
-			slog.Warn("Failed to share the agentcfg report", slogutil.FilePath(current.path), slogutil.Error(err))
+	if sig := signature(st); sig != s.sharedSig {
+		if err := writeReport(current, st); err != nil {
+			slog.Warn("Failed to share the agentcfg report", slogutil.FilePath(current.path()), slogutil.Error(err))
 			s.shareErr = err.Error()
 			s.sharedSig = ""
 			return
@@ -131,33 +158,53 @@ func (s *Service) scanShared(f sharedFile) {
 	if s.scanner == nil {
 		return
 	}
-	sub := ReportsDir + "/" + filepath.Base(f.path)
 	go func() {
-		if err := s.scanner.ScanFolderSubdirs(f.folder, []string{sub}); err != nil {
-			slog.Debug("Failed to scan the shared agentcfg report", slogutil.FilePath(f.path), slogutil.Error(err))
+		if err := s.scanner.ScanFolderSubdirs(f.folder, []string{f.name}); err != nil {
+			slog.Debug("Failed to scan the shared agentcfg report", slogutil.FilePath(f.path()), slogutil.Error(err))
 		}
 	}()
 }
 
-// writeReport replaces the report file through a temporary name that
+// The report files are reached through os.Root, so that a symlink that
+// another device synced into the folder cannot lead them outside it.
+
+// writeReport replaces the report file through a new temporary name that
 // Syncthing does not scan.
-func writeReport(path string, st Status) error {
+func writeReport(f sharedFile, st Status) error {
 	bs, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	root, err := os.OpenRoot(f.root)
+	if err != nil {
 		return err
 	}
-	tmp := stfs.TempName(path)
-	if err := os.WriteFile(tmp, append(bs, '\n'), 0o644); err != nil {
+	defer root.Close()
+	if err := root.MkdirAll(path.Dir(f.name), 0o755); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	tmp := path.Join(path.Dir(f.name), stfs.UnixTempPrefix+"agentcfg-"+rand.Text()+".tmp")
+	file, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
 		return err
 	}
-	return nil
+	_, err = file.Write(append(bs, '\n'))
+	if err = errors.Join(err, file.Close()); err == nil {
+		err = root.Rename(tmp, f.name)
+	}
+	if err != nil {
+		_ = root.Remove(tmp)
+	}
+	return err
+}
+
+func removeReport(f sharedFile) error {
+	root, err := os.OpenRoot(f.root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.Remove(f.name)
 }
 
 // FleetMember is one device in the fleet view.
@@ -169,6 +216,8 @@ type FleetMember struct {
 	// Error says why this device's report is not shared, or why a peer's
 	// report could not be read.
 	Error string `json:"error"`
+
+	id protocol.DeviceID
 }
 
 // Fleet returns the status of this device, followed by the reports that the
@@ -184,36 +233,19 @@ func (s *Service) Fleet() ([]FleetMember, error) {
 	self := FleetMember{DeviceID: myID.String(), Name: deviceName(cfg, myID), Self: true, Status: &st, Error: s.shareErr}
 	s.shareMut.Unlock()
 
-	dir, err := reportsDir(cfg, st.Folder)
+	folder, err := reportsFolderFor(cfg, st.Folder)
 	if err != nil {
 		if self.Error == "" {
 			self.Error = err.Error()
 		}
 		return []FleetMember{self}, nil
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	peers, err := readReports(folder.root, myID)
+	if err != nil {
 		return nil, err
 	}
-	var peers []FleetMember
-	for _, entry := range entries {
-		name, ok := strings.CutSuffix(entry.Name(), ".json")
-		if !ok || !entry.Type().IsRegular() {
-			continue
-		}
-		// Conflict copies and anything else not named by a device ID are
-		// not reports.
-		id, err := protocol.DeviceIDFromString(name)
-		if err != nil || id == myID {
-			continue
-		}
-		m := FleetMember{DeviceID: id.String(), Name: deviceName(cfg, id)}
-		if peer, err := readReport(filepath.Join(dir, entry.Name())); err != nil {
-			m.Error = err.Error()
-		} else {
-			m.Status = &peer
-		}
-		peers = append(peers, m)
+	for i := range peers {
+		peers[i].Name = deviceName(cfg, peers[i].id)
 	}
 	slices.SortFunc(peers, func(a, b FleetMember) int {
 		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.DeviceID, b.DeviceID))
@@ -221,14 +253,66 @@ func (s *Service) Fleet() ([]FleetMember, error) {
 	return append([]FleetMember{self}, peers...), nil
 }
 
-func readReport(path string) (Status, error) {
-	f, err := os.Open(path)
+// readReports reads the reports in a folder of every device but ours.
+func readReports(folderRoot string, myID protocol.DeviceID) ([]FleetMember, error) {
+	root, err := os.OpenRoot(folderRoot)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	dir, err := root.Open(ReportsDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	entries, err := dir.ReadDir(-1)
+	dir.Close()
+	if err != nil {
+		return nil, err
+	}
+	var peers []FleetMember
+	for _, entry := range entries {
+		stem, ok := strings.CutSuffix(entry.Name(), ".json")
+		if !ok || !entry.Type().IsRegular() {
+			continue
+		}
+		// Conflict copies and any other name than a device ID as we write
+		// it are not reports.
+		id, err := protocol.DeviceIDFromString(stem)
+		if err != nil || id.String() != stem || id == myID {
+			continue
+		}
+		m := FleetMember{DeviceID: stem, id: id}
+		if st, err := readReport(root, path.Join(ReportsDir, entry.Name())); err != nil {
+			m.Error = err.Error()
+		} else {
+			m.Status = &st
+		}
+		peers = append(peers, m)
+	}
+	return peers, nil
+}
+
+func readReport(root *os.Root, name string) (Status, error) {
+	f, err := root.Open(name)
 	if err != nil {
 		return Status{}, err
 	}
 	defer f.Close()
+	bs, err := io.ReadAll(io.LimitReader(f, fleetMaxReport+1))
+	if err != nil {
+		return Status{}, err
+	}
+	if len(bs) > fleetMaxReport {
+		return Status{}, fmt.Errorf("report larger than %d bytes", fleetMaxReport)
+	}
 	var st Status
-	if err := json.NewDecoder(io.LimitReader(f, fleetMaxReport)).Decode(&st); err != nil {
+	if err := json.Unmarshal(bs, &st); err != nil {
 		return Status{}, fmt.Errorf("invalid report: %w", err)
 	}
 	return st, nil

@@ -87,12 +87,15 @@ Out of scope:
   than on every check. Turning the fleet view or agentcfg off removes the file.
   Nothing is written when the spec is not in a shared folder, or when that
   folder is receive-only or receive-encrypted on this device; the fleet view
-  says why.
+  says why. Every report file is reached through `os.Root` at the folder's
+  root, so a symlink that another device synced into the folder cannot lead
+  a write, removal or read outside it.
 - **A5. Peer reports are only read.** `GET /rest/agentcfg/fleet` takes no
   parameter. It reads the `.json` files of that directory whose name is a
-  device ID other than ours, at most 1 MiB of JSON from each, and shows them
-  as text. Conflict copies and other names are ignored. Nothing in a peer
-  report is acted on.
+  device ID, spelled as Syncthing prints it, other than ours. Each must be a
+  single JSON value of at most 1 MiB, and is shown as text. Conflict copies
+  and other names are ignored. A device whose spec folder is receive-only
+  still reads the others' reports. Nothing in a peer report is acted on.
 
 ## Scenarios
 
@@ -102,7 +105,8 @@ Out of scope:
 |---|---|---|
 | F1a. A device that shares the spec's folder. | It receives every shared report, as it receives the spec. | Trust assumptions. |
 | F1b. A receive-encrypted device of that folder. | It stores the reports encrypted and cannot read them. | Syncthing's untrusted-device encryption. |
-| F1c. A device that does not share the folder, a tailnet node or a LAN host. | It gets nothing: reports travel only as files of the folder, and nothing listens for them. | A4, A5. |
+| F1c. A device that does not share the folder, a tailnet node or a LAN host. | It gets nothing: reports travel only as files of the folder, and nothing listens for them. |
+| F1e. A device of the folder syncs `.agentcfg` as a symlink to somewhere else. | Writing, removing and reading the reports fail with an error instead of following it. | A4. | A4, A5. |
 | F1d. A device leaves the folder. | It keeps the copies it already received; it gets no new ones. Treat a report as readable by every device that ever shared the folder. | Trust assumptions. |
 
 ### F2. Outages
@@ -147,7 +151,9 @@ Out of scope:
 |---|---|---|
 | A device shares its report in the spec's folder, rewrites it only when the result changes, and removes it when the fleet view is turned off, leaving peer reports alone. | A4 | `lib/agentcfg`: `TestFleetSharesReportsThroughTheSpecFolder`. |
 | Peer reports are read from that directory; malformed ones show an error, conflict copies and other names are ignored. | A5, F4b | `lib/agentcfg`: `TestFleetSharesReportsThroughTheSpecFolder`. |
-| Nothing is shared from a receive-only folder, and the fleet view says why. | A4 | `lib/agentcfg`: `TestFleetDoesNotShareFromAReceiveOnlyFolder`. |
+| Nothing is shared from a receive-only folder, and the fleet view says why while still showing the others. | A4, A5 | `lib/agentcfg`: `TestFleetDoesNotShareFromAReceiveOnlyFolder`. |
+| A symlinked reports directory does not lead outside the folder. | A4, F1e | `lib/agentcfg`: `TestFleetStaysInsideTheFolder`. |
+| A report withdrawn while the spec is missing comes back with it. | A4 | `lib/agentcfg`: `TestFleetSharesReportsThroughTheSpecFolder`. |
 | Our own writes do not trigger another run, other tools' writes do. | A3, F3c | `lib/agentcfg`: automatic apply in a temporary home. |
 | A discovered spec is never applied automatically. | A1, F3b | `lib/agentcfg`: automatic apply without `agentcfgSpecPath`. |
 | The REST endpoints need the API key or a session, and CSRF protection. | Trust assumptions | They are registered on the same router as every other `/rest` endpoint. |

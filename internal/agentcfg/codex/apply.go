@@ -26,7 +26,7 @@ import (
 // hooks.state trust store; in hooks.json it owns the hooks. Only the tables it
 // changes are rewritten: comments and layout elsewhere are kept.
 func Plan(home string, desired spec.Spec) ([]model.FileEdit, error) {
-	codexHome := codexHome(home)
+	codexHome := ConfigDir(home)
 	allowed := func(command string) bool { return slices.Contains(desired.Hooks[model.Codex], command) }
 	var edits []model.FileEdit
 

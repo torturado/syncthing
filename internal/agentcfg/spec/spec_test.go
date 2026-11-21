@@ -31,6 +31,11 @@ func TestLoadRejectsInvalidSpecs(t *testing.T) {
 		"server without target":         "[mcp_servers.search]\nagents = [\"claude\"]\n",
 		"unknown server agent":          "[mcp_servers.search]\nurl = \"https://example.com\"\nagents = [\"cursor\"]\n",
 		"unknown hook agent":            "[hooks]\ncursor = []\n",
+		"unknown sync folder":           "[sync.exclude]\ncursor = [\"/rules\"]\n",
+		"sync inclusion":                "[sync.exclude]\nclaude = [\"(?i)!/.credentials.json\"]\n",
+		"sync directive":                "[sync.exclude]\nagents = [\"#include other\"]\n",
+		"sync line break":               "[sync.exclude]\nagents = [\"/a\\n!/b\"]\n",
+		"sync blank pattern":            "[sync.exclude]\nagents = [\" \"]\n",
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -42,7 +47,7 @@ func TestLoadRejectsInvalidSpecs(t *testing.T) {
 }
 
 func TestLoadAcceptsValidSpec(t *testing.T) {
-	err := load(t, "[mcp_servers.search]\nurl = \"https://example.com\"\n\n[mcp_servers.files]\ncommand = \"mcp-files\"\nagents = [\"claude\"]\n\n[hooks]\nclaude = [\"notify\"]\n")
+	err := load(t, "[mcp_servers.search]\nurl = \"https://example.com\"\n\n[mcp_servers.files]\ncommand = \"mcp-files\"\nagents = [\"claude\"]\n\n[hooks]\nclaude = [\"notify\"]\n\n[sync.exclude]\nagents = [\"/skills/local\", \"(?d)**/*.tmp\"]\n")
 	if err != nil {
 		t.Fatal(err)
 	}

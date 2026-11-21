@@ -20,6 +20,10 @@ const (
 // Agents lists every supported agent in report order.
 var Agents = []Agent{Claude, Codex}
 
+// SyncFolders names the folders of agent configuration that machines keep in
+// sync: the directory the agents share, ~/.agents, and each agent's own.
+var SyncFolders = []string{"agents", string(Claude), string(Codex)}
+
 // SecretName matches header and variable names that carry credentials.
 var SecretName = regexp.MustCompile(`(?i)authorization|token|secret|passw|api[-_]?key|cookie|credential|private[-_]?key|(^|[-_])key$`)
 

@@ -550,3 +550,58 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+func TestSyncFoldersShareConfigurationOnlyAndExcludeWhatTheSpecSays(t *testing.T) {
+	home := t.TempDir()
+	opts := options(t, home, filepath.Join(home, ".agents", "agentcfg.toml"), "casa")
+
+	// A machine waiting for the spec still knows what to sync.
+	folders, err := agentcfg.SyncFolders(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]agentcfg.SyncFolder{}
+	for _, f := range folders {
+		byName[f.Name] = f
+	}
+	claude := byName["claude"]
+	if claude.Path != filepath.Join(home, ".claude") || !slices.Contains(claude.Ignore, "!/settings.json") || claude.Ignore[len(claude.Ignore)-1] != "/*" {
+		t.Errorf("claude folder = %+v; want its settings and nothing else from ~/.claude", claude)
+	}
+	if slices.ContainsFunc(claude.Ignore, func(p string) bool { return strings.Contains(p, "credentials") }) {
+		t.Errorf("claude folder syncs credentials: %q", claude.Ignore)
+	}
+	if codex := byName["codex"]; codex.Path != filepath.Join(home, ".codex") || !slices.Contains(codex.Ignore, "!/config.toml") {
+		t.Errorf("codex folder = %+v", codex)
+	}
+	if agents := byName["agents"]; agents.Path != filepath.Join(home, ".agents") || slices.Contains(agents.Ignore, "/*") {
+		t.Errorf("agents folder = %+v; want all of ~/.agents", agents)
+	}
+
+	// The spec's exclusions come first, so they win over what the agent shares.
+	if err := os.MkdirAll(filepath.Dir(opts.SpecPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(opts.SpecPath, []byte("[sync.exclude]\nclaude = [\"/agents/private.md\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	folders, err = agentcfg.SyncFolders(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range folders {
+		if f.Name == "claude" && f.Ignore[0] != "/agents/private.md" {
+			t.Errorf("claude patterns = %q; want the exclusion first", f.Ignore)
+		}
+		if f.Name != "claude" && slices.Contains(f.Ignore, "/agents/private.md") {
+			t.Errorf("%s patterns = %q; the exclusion belongs to claude", f.Name, f.Ignore)
+		}
+	}
+
+	if err := os.WriteFile(opts.SpecPath, []byte("[sync.exclude]\nclaude = [\"!/.credentials.json\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agentcfg.SyncFolders(opts); err == nil {
+		t.Error("a spec that includes files was accepted")
+	}
+}

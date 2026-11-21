@@ -94,6 +94,12 @@ func PathsFor(home string) Paths {
 	}
 }
 
+// Shared are the entries of Claude Code's directory that are configuration a
+// fleet can share. Everything else in it, such as the credentials in
+// .credentials.json, the history, projects and sessions, belongs to one
+// machine.
+var Shared = []string{"CLAUDE.md", "settings.json", "keybindings.json", "agents", "commands", "output-styles", "rules", "themes"}
+
 // WatchPaths are the files whose changes can change the inventory.
 func WatchPaths(home string) []string {
 	p := PathsFor(home)

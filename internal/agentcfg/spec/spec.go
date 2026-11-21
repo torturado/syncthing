@@ -1,6 +1,6 @@
 // Package spec loads the desired state: the MCP servers every machine must
-// have, the only hooks and plugins allowed to exist, and the machines that
-// may decrypt the shared secrets.
+// have, the only hooks and plugins allowed to exist, the machines that may
+// decrypt the shared secrets, and what stays out of the synced folders.
 //
 // The top level of the file is the base layer. Roles and the entry for the
 // current host add to it, in that order, so a machine keeps its own servers
@@ -50,11 +50,20 @@ type Host struct {
 	AgeRecipient string `toml:"age_recipient"`
 }
 
+// Sync is how the folders of agent configuration are synced. It applies to
+// the whole fleet, so it has no role or host layers.
+type Sync struct {
+	// Exclude lists, per folder in model.SyncFolders, Syncthing ignore
+	// patterns for files that stay on each machine.
+	Exclude map[string][]string `toml:"exclude"`
+}
+
 // File is the spec as written. Hosts are keyed by hostname or tailnet name.
 type File struct {
 	Layer
 	Roles map[string]Layer `toml:"roles"`
 	Hosts map[string]Host  `toml:"hosts"`
+	Sync  Sync             `toml:"sync"`
 }
 
 // Spec is the desired state of one machine after merging its layers.
@@ -76,6 +85,9 @@ func Load(path string) (File, error) {
 		return f, fmt.Errorf("%s: unknown keys %v", path, undecoded)
 	}
 	if err := f.Layer.validate("", path); err != nil {
+		return f, err
+	}
+	if err := f.Sync.validate(path); err != nil {
 		return f, err
 	}
 	for name, role := range f.Roles {
@@ -202,6 +214,40 @@ func (layer Layer) validate(prefix, path string) error {
 	for agent := range layer.Plugins {
 		if agent != model.Claude {
 			return fmt.Errorf("%s: %splugins: only claude plugins are supported, not %q", path, prefix, agent)
+		}
+	}
+	return nil
+}
+
+// validate accepts exclusions only. A negated pattern would sync what the
+// folder keeps local, such as credentials, and a directive would read
+// patterns from elsewhere.
+func (s Sync) validate(path string) error {
+	for folder, patterns := range s.Exclude {
+		where := fmt.Sprintf("%s: sync.exclude.%s", path, folder)
+		if !slices.Contains(model.SyncFolders, folder) {
+			return fmt.Errorf("%s: unknown folder; the synced folders are %s", where, strings.Join(model.SyncFolders, ", "))
+		}
+		for _, pattern := range patterns {
+			bare := pattern
+			for {
+				rest, ok := strings.CutPrefix(bare, "(?i)")
+				if !ok {
+					rest, ok = strings.CutPrefix(bare, "(?d)")
+				}
+				if !ok {
+					break
+				}
+				bare = rest
+			}
+			switch {
+			case strings.TrimSpace(bare) == "" || strings.ContainsAny(pattern, "\r\n"):
+				return fmt.Errorf("%s: %q is not a pattern", where, pattern)
+			case strings.HasPrefix(bare, "!"):
+				return fmt.Errorf("%s: %q includes files; only exclusions are allowed", where, pattern)
+			case strings.HasPrefix(bare, "#") || strings.HasPrefix(bare, "//"):
+				return fmt.Errorf("%s: %q is a directive or a comment, not a pattern", where, pattern)
+			}
 		}
 	}
 	return nil

@@ -44,7 +44,7 @@ type hooksFile struct {
 func Inventory(home string) (model.Inventory, error) {
 	var inv model.Inventory
 
-	codexHome := codexHome(home)
+	codexHome := ConfigDir(home)
 
 	for _, entry := range []struct{ path, scope string }{
 		{filepath.Join(codexHome, "config.toml"), "user"},
@@ -72,7 +72,8 @@ func Inventory(home string) (model.Inventory, error) {
 	return inv, nil
 }
 
-func codexHome(home string) string {
+// ConfigDir is Codex's own directory, CODEX_HOME when set.
+func ConfigDir(home string) string {
 	if dir := os.Getenv("CODEX_HOME"); dir != "" {
 		return dir
 	}
@@ -81,7 +82,7 @@ func codexHome(home string) string {
 
 // WatchPaths are the files whose changes can change the inventory.
 func WatchPaths(home string) []string {
-	return []string{filepath.Join(codexHome(home), "config.toml"), filepath.Join(codexHome(home), "hooks.json")}
+	return []string{filepath.Join(ConfigDir(home), "config.toml"), filepath.Join(ConfigDir(home), "hooks.json")}
 }
 
 func readConfig(path, scope string, inv *model.Inventory) error {
@@ -152,3 +153,8 @@ func readConfig(path, scope string, inv *model.Inventory) error {
 	}
 	return nil
 }
+
+// Shared are the entries of Codex's directory that are configuration a fleet
+// can share. Everything else in it, such as the credentials in auth.json,
+// the sessions and the databases, belongs to one machine.
+var Shared = []string{"AGENTS.md", "config.toml", "rules"}

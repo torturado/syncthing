@@ -1,0 +1,98 @@
+name: CI
+
+# The fork's checks: upstream's tests, lint and meta checks, without
+# upstream's packaging, signing, publishing and repository automation, which
+# need the Syncthing project's secrets and infrastructure.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Keep in step with GO_VERSION in upstream's build-syncthing.yaml.
+  GO_VERSION: "~1.27.0"
+  LOGGER_DISCARD: "1"
+
+jobs:
+  build-test:
+    name: Build and test
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ["windows-latest", "ubuntu-latest", "macos-latest"]
+        # The oldest version should match go.mod.
+        go: ["~1.26.0", "~1.27.0"]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Set git to use LF
+        if: matrix.runner == 'windows-latest'
+        # Tests read data from disk and expect LF line endings.
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+          check-latest: true
+
+      - name: Build
+        run: go run build.go
+
+      - name: Test
+        run: |
+          go version
+          go run build.go test
+
+  golangci:
+    name: Run golangci-lint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Generate assets
+        run: go run build.go assets
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
+        with:
+          only-new-issues: true
+
+  govulncheck:
+    name: Run govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - run: |
+          go run build.go assets
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  meta:
+    name: Run meta checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - run: |
+          go run build.go assets
+          go test -v ./meta

@@ -211,7 +211,7 @@ changed since 2.1.5, so the packaged binary can take the database back.
   torturado/agentcfg was archived, and deleted on 2026-11-22; its `v0.2.0` was the last
   release there. The CLI is built from the fork,
   `CGO_ENABLED=0 go build -trimpath -o agentcfg ./cmd/agentcfg`, and
-  `.github/workflows/agentcfg.yaml` runs its checks.
+  CI runs its checks.
 - **Name, 2026-11-22:** the fork is `torturado/syncthing-agents`, renamed from
   `torturado/syncthing` so that the name says what it adds; GitHub redirects the old URLs.
   Its `README.md` describes the fork instead of upstream Syncthing. The host names of the
@@ -224,6 +224,12 @@ changed since 2.1.5, so the packaged binary can take the database back.
   `lib/agentcfg` (the service), all new directories. Elsewhere, only registration: one line in
   `lib/syncthing`, routes in `lib/api`, options in `lib/config`, and one GUI template.
 - No changes to BEP or the database schema.
+- CI is the fork's own `.github/workflows/ci.yaml`: upstream's build and test matrix,
+  golangci-lint, govulncheck and the meta checks. Upstream's other workflows (packaging,
+  signing, publishing, Docker images, mirrors, nightlies, translations, PR labels) need the
+  Syncthing project's secrets and infrastructure, so they are removed. When upstream changes
+  one, keep it removed; when upstream changes the Go versions or these jobs in
+  `build-syncthing.yaml`, carry the change over to `ci.yaml`.
 - `README.md` is the fork's own. When upstream changes theirs, keep ours and carry over
   anything that still applies, such as a new build requirement.
 - Rebase on every upstream release and record the conflicts. If the agentcfg part causes

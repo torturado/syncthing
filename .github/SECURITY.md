@@ -1,7 +1,8 @@
 ## Reporting a Vulnerability
 
-If you believe that you've found a Syncthing-related security vulnerability,
-please report it by email to security@syncthing.net.
+Report a vulnerability in this fork's additions (agentcfg and the Tailscale
+integration) privately, through *Security → Report a vulnerability* on this
+repository.
 
-You can read more about Syncthing security at
+One that also affects stock Syncthing goes to security@syncthing.net; see
 https://syncthing.net/security/.

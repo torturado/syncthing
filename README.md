@@ -1,110 +1,122 @@
-[![Syncthing][14]][15]
+# syncthing-agents
 
----
+An unofficial fork of [Syncthing][syncthing] that keeps the configuration of AI
+coding agents (Claude Code and Codex CLI) the same on every machine you own, and
+that uses Tailscale to find and authorize those machines.
 
-[![MPLv2 License](https://img.shields.io/badge/license-MPLv2-blue.svg?style=flat-square)](https://www.mozilla.org/MPL/2.0/)
-[![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/88/badge)](https://bestpractices.coreinfrastructure.org/projects/88)
-[![Go Report Card](https://goreportcard.com/badge/github.com/syncthing/syncthing)](https://goreportcard.com/report/github.com/syncthing/syncthing)
+It is Syncthing with additions. The sync engine, the protocol, the
+configuration and the web GUI are upstream's, and a device running this fork
+syncs with devices running stock Syncthing. Each addition is described below
+with how it is turned on.
 
-## Goals
+This fork is not affiliated with or endorsed by the Syncthing Foundation.
+Report problems with it here, not on Syncthing's forum or issue tracker.
 
-Syncthing is a **continuous file synchronization program**. It synchronizes
-files between two or more computers. We strive to fulfill the goals below.
-The goals are listed in order of importance, the most important ones first.
-This is the summary version of the goal list - for more
-commentary, see the full [Goals document][13].
+## What it adds
 
-Syncthing should be:
+### Agent configuration that syncs itself
 
-1. **Safe From Data Loss**
+Mark a device with **Sync AI Agent Configuration** (*Edit device*, on both
+ends), and the fork shares three folders with it, with the same IDs and paths
+on every device:
 
-   Protecting the user's data is paramount. We take every reasonable
-   precaution to avoid corrupting the user's files.
+| Folder | Path | What syncs |
+|---|---|---|
+| `agentcfg-agents` | `~/.agents` | everything: skills, the spec, `secrets.age` |
+| `agentcfg-claude` | `~/.claude` | `CLAUDE.md`, `settings.json`, `keybindings.json`, `agents/`, `commands/`, `output-styles/`, `rules/`, `themes/` |
+| `agentcfg-codex` | `~/.codex` | `AGENTS.md`, `config.toml`, `rules/` |
 
-2. **Secure Against Attackers**
+Credentials, sessions, history and caches stay on each machine. No folder is
+set up by hand: the fork writes the ignore patterns, and a device that joins
+an existing fleet takes the fleet's copy of each file and keeps its own as a
+conflict copy. More files can be kept on each machine with `[sync.exclude]`
+in the spec.
 
-   Again, protecting the user's data is paramount. Regardless of our other
-   goals, we must never allow the user's data to be susceptible to
-   eavesdropping or modification by unauthorized parties.
+### Checks against a spec
 
-3. **Easy to Use**
+Put an `agentcfg.toml` spec in `~/.agents` and every device checks its agents
+against it: which MCP servers are configured, which hooks and plugins are
+installed, and whether a credential is written into a file instead of
+referenced. The result shows in the GUI, and the **fleet view** shows every
+device's result, shared through the same folder. With `agentcfgApply` set to
+`auto` and `agentcfgSpecPath` pointing at the spec, a device corrects the drift
+itself.
 
-   Syncthing should be approachable, understandable, and inclusive.
+Credentials travel encrypted with [age][age] in `secrets.age`, and each machine
+decrypts them into a local environment file.
 
-4. **Automatic**
+The same checks run outside Syncthing with the `agentcfg` command. See
+[docs/agentcfg](docs/agentcfg/README.md).
 
-   User interaction should be required only when absolutely necessary.
+### Tailscale
 
-5. **Universally Available**
+All three are off by default:
 
-   Syncthing should run on every common computer. We are mindful that the
-   latest technology is not always available to every individual.
+- **Discovery** (`tailscaleDiscoveryEnabled`): finds the other Syncthing nodes
+  on the tailnet at their tailnet addresses.
+- **Authorization by the tailnet policy** (`tailscaleAutoAcceptDevices`): a
+  grant in the tailnet policy decides which new devices join and which folders
+  they get.
+- **Listening on the tailnet only** (`tailscaleListenOnly`).
 
-6. **For Individuals**
+The device ID stays the identity, and every connection is authenticated with
+TLS as in upstream. See [docs/tailscale](docs/tailscale/README.md) and its
+[threat model](docs/tailscale/threat-model.md).
 
-   Syncthing is primarily about empowering the individual user with safe,
-   secure, and easy to use file synchronization.
+## Status
 
-7. **Everything Else**
+A personal project, run daily on a handful of Linux machines. There are no
+releases and no binaries; build it from source. It follows upstream `main`,
+and CI runs upstream's tests and the fork's on Linux, macOS and Windows.
 
-   There are many things we care about that don't make it on to the list. It
-   is fine to optimize for these values, as long as they are not in conflict
-   with the stated goals above.
+## Build
 
-## Getting Started
+Requires Go (see `go.mod`).
 
-Take a look at the [getting started guide][2].
+```sh
+go run build.go -no-upgrade build syncthing     # ./syncthing
+CGO_ENABLED=0 go build -trimpath -o agentcfg ./cmd/agentcfg  # ./agentcfg
+```
 
-There are a few examples for keeping Syncthing running in the background
-on your system in [the etc directory][3]. There are also several [GUI
-implementations][11] for Windows, Mac, and Linux.
-
-## Docker
-
-To run Syncthing in Docker, see [the Docker README][16].
-
-## Getting in Touch
-
-The first and best point of contact is the [Forum][8].
-If you've found something that is clearly a
-bug, feel free to report it in the [GitHub issue tracker][10].
-
-If you believe that you’ve found a Syncthing-related security vulnerability,
-please report it by emailing security@syncthing.net. Do not report it in the
-Forum or issue tracker.
-
-## Building
-
-Building Syncthing from source is easy. After extracting the source bundle from
-a release or checking out git, you just need to run `go run build.go` and the
-binaries are created in `./bin`. There's [a guide][5] with more details on the
-build process.
-
-## Signed Releases
-
-Release binaries are GPG signed with the key available from
-https://syncthing.net/security/. There is also a built-in automatic
-upgrade mechanism (disabled in some distribution channels) which uses a
-compiled in ECDSA signature. macOS and Windows binaries are also
-code-signed.
+`-no-upgrade` stops the binary from replacing itself with an upstream release.
+Run it in place of `syncthing`, with the same configuration directory; the new
+options appear under *Actions → Advanced → Options*.
 
 ## Documentation
 
-Please see the Syncthing [documentation site][6] [[source]][17].
+- [docs/agentcfg/README.md](docs/agentcfg/README.md): the spec, `check`,
+  `apply`, secrets and the synced folders.
+- [docs/agentcfg/integration-plan.md](docs/agentcfg/integration-plan.md): how
+  agentcfg runs inside Syncthing, and its rollout.
+- [docs/tailscale/README.md](docs/tailscale/README.md): the Tailscale options
+  and the policy they need.
+- Threat models: [Tailscale](docs/tailscale/threat-model.md) and
+  [agentcfg](docs/tailscale/agentcfg-threat-model.md).
+- [docs/tailscale/fork-maintenance.md](docs/tailscale/fork-maintenance.md):
+  what carrying the fork on top of upstream costs.
+- Everything else is Syncthing's: [documentation][docs], [goals][goals],
+  [getting started][start].
 
-All code is licensed under the [MPLv2 License][7].
+## Code layout
 
-[1]: https://docs.syncthing.net/specs/bep-v1.html
-[2]: https://docs.syncthing.net/intro/getting-started.html
-[3]: https://github.com/syncthing/syncthing/blob/main/etc
-[5]: https://docs.syncthing.net/dev/building.html
-[6]: https://docs.syncthing.net/
-[7]: https://github.com/syncthing/syncthing/blob/main/LICENSE
-[8]: https://forum.syncthing.net/
-[10]: https://github.com/syncthing/syncthing/issues
-[11]: https://docs.syncthing.net/users/contrib.html#gui-wrappers
-[13]: https://github.com/syncthing/syncthing/blob/main/GOALS.md
-[14]: assets/logo-text-128.png
-[15]: https://syncthing.net/
-[16]: https://github.com/syncthing/syncthing/blob/main/README-Docker.md
-[17]: https://github.com/syncthing/docs
+The additions live in their own directories, so merging upstream stays cheap:
+`internal/agentcfg` (the library), `cmd/agentcfg` (the command),
+`lib/agentcfg` (the service inside Syncthing) and `lib/tailscale`. Elsewhere
+the changes are small hooks into upstream code. The Go module path stays
+`github.com/syncthing/syncthing` for the same reason.
+
+## Security
+
+Report a vulnerability in the fork's additions privately, through *Security →
+Report a vulnerability* on this repository. One that also affects stock
+Syncthing goes to security@syncthing.net, as upstream asks.
+
+## License
+
+[MPL-2.0](LICENSE), as Syncthing.
+
+[syncthing]: https://syncthing.net/
+[age]: https://age-encryption.org/
+[docs]: https://docs.syncthing.net/
+[goals]: GOALS.md
+[start]: https://docs.syncthing.net/intro/getting-started.html

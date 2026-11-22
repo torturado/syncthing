@@ -230,4 +230,4 @@ hooks and permissions on top of a shared base. All values in them are fake.
 ## License
 
 MPL-2.0, as the rest of Syncthing. Until it moved into the fork, agentcfg was MIT-licensed
-in its own repository, torturado/agentcfg, which is archived.
+in its own repository, since deleted.

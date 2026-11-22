@@ -1,12 +1,12 @@
-# Plan: agentcfg built into torturado/syncthing
+# Plan: agentcfg built into the Syncthing fork, torturado/syncthing-agents
 
 Status, 2026-11-20:
-- Phase A is implemented in agentcfg (PR torturado/agentcfg#1).
-- Phase B is implemented in the fork (PR torturado/syncthing#7).
+- Phase A is implemented in agentcfg (PR torturado/agentcfg#1, in the deleted repository).
+- Phase B is implemented in the fork (PR torturado/syncthing-agents#7).
 - The A gates are done on the six machines: credentials are in `secrets.age` and the Coolify
   token is rotated.
 - The fixes found before enabling automatic apply are in agentcfg `v0.1.0` (PRs
-  torturado/agentcfg#2 and #3), which the fork requires since torturado/syncthing#8.
+  torturado/agentcfg#2 and #3), which the fork requires since torturado/syncthing-agents#8.
 - Phase C is rolled out on five machines; prod is pending (see C3).
 
 Deviations from this plan, kept on purpose:
@@ -122,8 +122,8 @@ that arrived there. It needs no Tailscale setup and works without Tailscale.
   device cannot.
 - **Remote apply is out of scope.** A shared report is only read and shown.
 - The first version served reports on a tailnet-only listener, authorized with `WhoIs`, a
-  `tag:syncthing` tag on every node and a policy grant (torturado/syncthing#7). It was replaced
-  (torturado/syncthing#9) because tagging every machine in the Tailscale admin was too much
+  `tag:syncthing` tag on every node and a policy grant (torturado/syncthing-agents#7). It was replaced
+  (torturado/syncthing-agents#9) because tagging every machine in the Tailscale admin was too much
   setup.
 - `docs/tailscale/agentcfg-threat-model.md` in the fork covers both the checks and the fleet view.
 
@@ -139,7 +139,7 @@ the fork binary through a systemd drop-in, so rolling back means removing the dr
 last, and only after a week without incidents on the others.
 
 **C3. Rollout, 2026-11-20.** desktop, laptop, gpu-box, server-a and server-b run the fork built from
-its `main` at `1c4268385` (`v2.1.8-dev.16`, `CGO_ENABLED=0 go run build.go -no-upgrade build
+its `main` at `bf31b816b` (`v2.1.8-dev.16`, `CGO_ENABLED=0 go run build.go -no-upgrade build
 syncthing`, so a static binary with modernc SQLite, as in the Debian package). The schema has not
 changed since 2.1.5, so the packaged binary can take the database back.
 - **Binary:** `~/.local/bin/syncthing-agentcfg` for the user units (desktop, laptop, gpu-box),
@@ -166,7 +166,7 @@ changed since 2.1.5, so the packaged binary can take the database back.
   - prod, on 2026-11-27 if the others have no incidents. laptop, which was off, moved to
     the current build with the agent folders below.
 - **Fleet view, 2026-11-21:** desktop, gpu-box, server-a and server-b run the fork's `main` at
-  `58f004e13` (`v2.1.8-dev.17`, torturado/syncthing#9), which shares the reports through
+  `8fae8140e` (`v2.1.8-dev.17`, torturado/syncthing-agents#9), which shares the reports through
   `~/.agents`.
   - desktop's fleet view shows all four reports, and nothing listens on port 22100;
   - a server added to gpu-box's `~/.claude.json` shows in desktop's fleet view in 3 s and clears in
@@ -181,7 +181,7 @@ changed since 2.1.5, so the packaged binary can take the database back.
     a tagged node returns to a user only by logging in again, and the fork's Tailscale
     integration uses `tag:syncthing`.
 - **Agent folders, 2026-11-21:** desktop, gpu-box, server-a and server-b run the fork's `main` at
-  `1bd322e99` (`v2.1.8-dev.18`, torturado/syncthing#10) with the `agentcfg` CLI `v0.2.0`.
+  `0eb91c840` (`v2.1.8-dev.18`, torturado/syncthing-agents#10) with the `agentcfg` CLI `v0.2.0`.
   - The hand-made folders `claude-config`, `codex-config` and `codex-skills` are removed from
     Syncthing on the four; their files stay. Each device marks the others, laptop included,
     with `agentcfgSync`, and the fork shares `agentcfg-agents`, `agentcfg-claude` and
@@ -208,9 +208,15 @@ changed since 2.1.5, so the packaged binary can take the database back.
 - **One repository, 2026-11-21:** agentcfg moved into the fork with its history:
   `internal/agentcfg` and `cmd/agentcfg`, with these documents in `docs/agentcfg`. The fork was
   its only user, and every change to the spec had to land in both repositories in order.
-  torturado/agentcfg is archived; its `v0.2.0` is the last release there. The CLI is built from
-  the fork, `CGO_ENABLED=0 go build -trimpath -o agentcfg ./cmd/agentcfg`, and
+  torturado/agentcfg was archived, and deleted on 2026-11-22; its `v0.2.0` was the last
+  release there. The CLI is built from the fork,
+  `CGO_ENABLED=0 go build -trimpath -o agentcfg ./cmd/agentcfg`, and
   `.github/workflows/agentcfg.yaml` runs its checks.
+- **Name, 2026-11-22:** the fork is `torturado/syncthing-agents`, renamed from
+  `torturado/syncthing` so that the name says what it adds; GitHub redirects the old URLs.
+  Its `README.md` describes the fork instead of upstream Syncthing. The host names of the
+  machines were removed from the history, so commit hashes from before that day changed;
+  the ones in these documents are the new ones.
 
 ## Rules for keeping the fork cheap
 
@@ -218,6 +224,8 @@ changed since 2.1.5, so the packaged binary can take the database back.
   `lib/agentcfg` (the service), all new directories. Elsewhere, only registration: one line in
   `lib/syncthing`, routes in `lib/api`, options in `lib/config`, and one GUI template.
 - No changes to BEP or the database schema.
+- `README.md` is the fork's own. When upstream changes theirs, keep ours and carry over
+  anything that still applies, such as a new build requirement.
 - Rebase on every upstream release and record the conflicts. If the agentcfg part causes
   conflicts on two consecutive releases, switch to plan B (separate daemon).
 

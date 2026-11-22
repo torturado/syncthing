@@ -164,7 +164,7 @@ tailnet, including relays when they are enabled. The GUI is unchanged.
 ## Security
 
 I wrote the threat model before the code:
-[threat-model.md](https://github.com/torturado/syncthing/blob/main/docs/tailscale/threat-model.md).
+[threat-model.md](https://github.com/torturado/syncthing-agents/blob/main/docs/tailscale/threat-model.md).
 It went through several rounds of adversarial review, which changed the
 design. In short:
 
@@ -260,7 +260,7 @@ for a `go-json-experiment/json` that does not compile with Go 1.27, so that
 module is bumped.
 
 **Fork maintenance today**
-([fork-maintenance.md](https://github.com/torturado/syncthing/blob/main/docs/tailscale/fork-maintenance.md)).
+([fork-maintenance.md](https://github.com/torturado/syncthing-agents/blob/main/docs/tailscale/fork-maintenance.md)).
 I reapplied the series onto the last three releases, v2.1.5, v2.1.6 and
 v2.1.7. Each one then built and passed the race
 unit suite and the end-to-end suite. The code conflicts were the same on all

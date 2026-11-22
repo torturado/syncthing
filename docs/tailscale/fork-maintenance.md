@@ -4,10 +4,10 @@ The integration is four commits on top of upstream `main` at f2ed52347:
 
 | # | Commit | Change |
 |---|---|---|
-| 1 | c3efacb8a | threat model |
-| 2 | 1eb29ba75 | discovery |
-| 3 | 2054aecae | authorization of new devices |
-| 4 | 27fd20d9b | listening on the tailnet only |
+| 1 | f3465fc60 | threat model |
+| 2 | 12abfe32a | discovery |
+| 3 | e304f024b | authorization of new devices |
+| 4 | 24c03e7eb | listening on the tailnet only |
 
 This report measures the cost of carrying them as a fork. Each commit was
 reapplied to each of the last three releases: v2.1.5, v2.1.6 and v2.1.7.
@@ -18,7 +18,7 @@ are what someone who wants the integration on a released version has to build.
 
 ## Method
 
-1. `script/tailscale-fork-cost.sh f2ed52347 27fd20d9b v2.1.5 v2.1.6 v2.1.7`
+1. `script/tailscale-fork-cost.sh f2ed52347 24c03e7eb v2.1.5 v2.1.6 v2.1.7`
    cherry-picks the commits onto each tag, each in its own worktree.
    - It ignores recorded resolutions (rerere), so every run starts cold.
    - When `go.mod` and `go.sum` conflict, it regenerates them with the
@@ -162,7 +162,7 @@ go mod tidy
 ## Reproducing
 
 ```sh
-script/tailscale-fork-cost.sh f2ed52347 27fd20d9b v2.1.5 v2.1.6 v2.1.7
+script/tailscale-fork-cost.sh f2ed52347 24c03e7eb v2.1.5 v2.1.6 v2.1.7
 ```
 
 The script prints its table, as in the second table above, and the directory with its worktrees and

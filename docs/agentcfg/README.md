@@ -77,7 +77,7 @@ age_recipient = "age1..."                     # this machine may decrypt secrets
 hooks = { claude = ["python3 ~/.claude/hooks/gpu-guard.py"] }
 
 [sync.exclude]                                # files that stay on each machine
-agents = ["/skills/local-only"]                  # Syncthing ignore patterns, per synced folder
+agents = ["/skills/local-only"]               # Syncthing ignore patterns, per synced folder
 ```
 
 A credential in the spec must be a reference such as `${NAME}`; the spec is rejected

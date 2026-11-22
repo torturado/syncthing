@@ -1,4 +1,5 @@
 /syncthing
+/agentcfg
 /stdiscosrv
 *.tar.gz
 *.zip

@@ -7,7 +7,7 @@ Status, 2026-11-20:
   token is rotated.
 - The fixes found before enabling automatic apply are in agentcfg `v0.1.0` (PRs
   torturado/agentcfg#2 and #3), which the fork requires since torturado/syncthing-agents#8.
-- Phase C is rolled out on five machines; prod is pending (see C3).
+- Phase C is rolled out on the six machines, prod since 2026-11-23 (see C3).
 
 Deviations from this plan, kept on purpose:
 - Automatic apply needs an explicit `agentcfgSpecPath`. A spec that is only found in a shared
@@ -217,6 +217,26 @@ changed since 2.1.5, so the packaged binary can take the database back.
   Its `README.md` describes the fork instead of upstream Syncthing. The host names of the
   machines were removed from the history, so commit hashes from before that day changed;
   the ones in these documents are the new ones.
+- **prod, 2026-11-23:** moved ahead of 2026-11-27, at the user's request; the others had no
+  incidents.
+  - The old folders `claude-config`, `codex-config` and `codex-skills` are removed from its
+    Syncthing; their files stay.
+  - It runs the same binary as the others (`v2.1.8-dev.18.g1bd322e9`) at
+    `/usr/local/bin/syncthing-agentcfg`, with the same drop-in, and the `agentcfg` CLI
+    `v0.2.0`. The packaged binary stays installed, and the state from before is kept in
+    `/root/syncthing-state-before-fork-2026-11-23.tar.gz`.
+  - prod marks the five others with `agentcfgSync`, and desktop, gpu-box, server-a and server-b
+    mark prod. laptop, which was off, still has to mark it.
+  - Checks passed:
+    - the three folders are at 100 % with no pull errors;
+    - `CLAUDE.md`, `AGENTS.md` and the spec match desktop's;
+    - desktop's fleet view shows the six reports, 0 errors and 0 findings;
+    - a file created and then removed in `~/.agents` on desktop reaches prod in 54 s, and the
+      removal in 71 s.
+  - prod held old copies of the others' reports, so 5 conflict copies of reports appeared once;
+    they were removed.
+  - `skills/registro-obsidian` is excluded in `[sync.exclude]`: it points into `/root/obsidian`,
+    which only server-a has, so it stays there and is removed elsewhere.
 
 ## Rules for keeping the fork cheap
 

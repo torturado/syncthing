@@ -8,7 +8,7 @@ Status, 2026-11-20:
 - The fixes found before enabling automatic apply are in agentcfg `v0.1.0` (PRs
   torturado/agentcfg#2 and #3), which the fork requires since torturado/syncthing-agents#8.
 - Phase C is rolled out on the six machines, prod since 2026-11-23 (see C3). Antigravity
-  support and automatic apply are on five since 2026-11-24; laptop is pending.
+  support and automatic apply are on the six since 2026-11-24.
 
 Deviations from this plan, kept on purpose:
 - Automatic apply needs an explicit `agentcfgSpecPath`. A spec that is only found in a shared
@@ -263,6 +263,15 @@ changed since 2.1.5, so the packaged binary can take the database back.
     - `keenable` removed by hand from desktop's `~/.gemini/config/mcp_config.json` was written
       back within 3 s, with the same content and mode 0600.
   - Pending: laptop, which needs this build as well.
+- **Start-up fix and laptop, 2026-11-24:** the build of #18 crashed laptop at start (nil pointer
+  in `lib/agentcfg`, fixed in torturado/syncthing-agents#20): index events from the first scan of
+  `agentcfg-gemini` arrived before the first run had found the spec. The six machines run the
+  fork's `main` at `127ed39c0` (`v2.1.8-dev.41`); `.prev` holds the build each one ran before.
+  - laptop now marks prod with `agentcfgSync`, so every device marks the five others.
+  - Checks passed:
+    - every service restarted once, with no restart or panic since;
+    - desktop's fleet view shows the six reports, 0 errors, 0 warnings and no apply error;
+    - the four folders are at 100 % on the five peers of desktop, with no new conflict copies.
 
 ## Rules for keeping the fork cheap
 

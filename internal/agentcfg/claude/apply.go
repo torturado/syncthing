@@ -7,13 +7,8 @@
 package claude
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io/fs"
-	"maps"
-	"os"
 	"slices"
 
 	"github.com/syncthing/syncthing/internal/agentcfg/jsonedit"
@@ -67,9 +62,8 @@ func Plan(home string, desired spec.Spec, inv model.Inventory) ([]model.FileEdit
 		// check does not report it; it is left alone.
 		{paths.MCPJSON, mcpJSON, inMCPJSON, false},
 	} {
-		edit, err := editObject(target.path, "mcpServers", func(current json.RawMessage) (json.RawMessage, []string, error) {
-			return reconcileServers(current, target.want, target.owned, target.add)
-		})
+		servers := jsonedit.Servers{Want: target.want, OwnedKeys: ownedKeys, Owned: target.owned, Add: target.add}
+		edit, err := jsonedit.EditKey(target.path, "mcpServers", servers.Reconcile)
 		if err != nil {
 			return nil, err
 		}
@@ -78,7 +72,7 @@ func Plan(home string, desired spec.Spec, inv model.Inventory) ([]model.FileEdit
 		}
 	}
 
-	edit, err := editObject(paths.Settings, "hooks", func(current json.RawMessage) (json.RawMessage, []string, error) {
+	edit, err := jsonedit.EditKey(paths.Settings, "hooks", func(current json.RawMessage) (json.RawMessage, []string, error) {
 		if current == nil {
 			return nil, nil, nil
 		}
@@ -141,107 +135,4 @@ func render(s spec.Server) (jsonedit.Object, error) {
 		err = errors.Join(err, add("env", s.Env))
 	}
 	return entry, err
-}
-
-// reconcileServers keeps the order of servers that stay, corrects the owned
-// keys of those that differ and, when add is set, appends new ones in name
-// order. Entries that owned rejects are kept as they are.
-func reconcileServers(current json.RawMessage, want map[string]jsonedit.Object, owned func(string) bool, add bool) (json.RawMessage, []string, error) {
-	existing := jsonedit.Object{}
-	if current != nil {
-		var err error
-		if existing, err = jsonedit.Parse(current); err != nil {
-			return nil, nil, fmt.Errorf("mcpServers: %w", err)
-		}
-	}
-	var changes []string
-	next := jsonedit.Object{}
-	for _, member := range existing {
-		entry, declared := want[member.Key]
-		switch {
-		case !owned(member.Key):
-			next = append(next, member)
-		case !declared:
-			changes = append(changes, "remove MCP server "+member.Key)
-		default:
-			value, err := mergeEntry(member.Value, entry)
-			if err != nil {
-				return nil, nil, fmt.Errorf("mcpServers.%s: %w", member.Key, err)
-			}
-			if !jsonedit.Equal(member.Value, value) {
-				changes = append(changes, "update MCP server "+member.Key)
-			}
-			next = append(next, jsonedit.Member{Key: member.Key, Value: value})
-		}
-	}
-	if add {
-		for _, name := range slices.Sorted(maps.Keys(want)) {
-			if _, found := existing.Get(name); !found {
-				value, err := jsonedit.Marshal(want[name])
-				if err != nil {
-					return nil, nil, err
-				}
-				changes = append(changes, "add MCP server "+name)
-				next = append(next, jsonedit.Member{Key: name, Value: value})
-			}
-		}
-	}
-	if len(changes) == 0 {
-		return current, nil, nil
-	}
-	value, err := jsonedit.Marshal(next)
-	return value, changes, err
-}
-
-// mergeEntry writes the owned keys of want into an existing entry, in place,
-// and keeps the other keys.
-func mergeEntry(current json.RawMessage, want jsonedit.Object) (json.RawMessage, error) {
-	entry, err := jsonedit.Parse(current)
-	if err != nil {
-		return nil, err
-	}
-	merged := jsonedit.Object{}
-	for _, member := range entry {
-		if !slices.Contains(ownedKeys, member.Key) {
-			merged = append(merged, member)
-		} else if value, ok := want.Get(member.Key); ok {
-			merged = append(merged, jsonedit.Member{Key: member.Key, Value: value})
-		}
-	}
-	for _, member := range want {
-		if _, found := merged.Get(member.Key); !found {
-			merged = append(merged, member)
-		}
-	}
-	return jsonedit.Marshal(merged)
-}
-
-// editObject rewrites one top-level key of a JSON file. change receives the
-// current value (nil when absent) and returns the new one with a description
-// of each change; no changes means no edit.
-func editObject(path, key string, change func(json.RawMessage) (json.RawMessage, []string, error)) (*model.FileEdit, error) {
-	before, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, err
-	}
-	doc := jsonedit.Object{}
-	if len(bytes.TrimSpace(before)) > 0 {
-		if doc, err = jsonedit.Parse(before); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-	}
-	current, _ := doc.Get(key)
-	value, changes, err := change(current)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if len(changes) == 0 {
-		return nil, nil //nolint:nilnil // no edit: the file already matches
-	}
-	trailingNewline := len(before) == 0 || before[len(before)-1] == '\n'
-	after, err := jsonedit.Format(doc.Set(key, value), trailingNewline)
-	if err != nil {
-		return nil, err
-	}
-	return &model.FileEdit{Path: path, Before: before, After: after, Changes: changes}, nil
 }

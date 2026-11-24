@@ -25,7 +25,7 @@ on every device:
 | `agentcfg-agents` | `~/.agents` | everything: skills, the spec, `secrets.age` |
 | `agentcfg-claude` | `~/.claude` | `CLAUDE.md`, `settings.json`, `keybindings.json`, `agents/`, `commands/`, `output-styles/`, `rules/`, `themes/` |
 | `agentcfg-codex` | `~/.codex` | `AGENTS.md`, `config.toml`, `rules/` |
-| `agentcfg-gemini` | `~/.gemini` | `GEMINI.md`, and in `config/`: `skills/`, `mcp_config.json`, `hooks.json`, `global_workflows/`, `agents/`, `plugins/` |
+| `agentcfg-gemini` | `~/.gemini` | `GEMINI.md`, and in `config/`: `skills/`, `hooks.json`, `global_workflows/`, `agents/`, `plugins/` |
 
 Credentials, sessions, history and caches stay on each machine. No folder is
 set up by hand: the fork writes the ignore patterns, and a device that joins
@@ -38,7 +38,8 @@ in the spec.
 Put an `agentcfg.toml` spec in `~/.agents` and every device checks its agents
 against it: which MCP servers are configured, which hooks and plugins are
 installed, and whether a credential is written into a file instead of
-referenced. The result shows in the GUI, and the **fleet view** shows every
+referenced. Antigravity cannot reference a credential, so `apply` writes the
+value into its `mcp_config.json`, which stays on each machine. The result shows in the GUI, and the **fleet view** shows every
 device's result, shared through the same folder. With `agentcfgApply` set to
 `auto` and `agentcfgSpecPath` pointing at the spec, a device corrects the drift
 itself.

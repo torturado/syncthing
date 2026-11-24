@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/syncthing/syncthing/internal/agentcfg/antigravity"
 	"github.com/syncthing/syncthing/internal/agentcfg/claude"
 	"github.com/syncthing/syncthing/internal/agentcfg/codex"
 	"github.com/syncthing/syncthing/internal/agentcfg/model"
@@ -37,17 +38,6 @@ type SyncFolder struct {
 // agentsJunk is what no machine needs from the directory the agents share:
 // repositories, dependencies and caches that skills bring along.
 var agentsJunk = []string{"**/.git", "**/node_modules", "**/__pycache__", "**/*.pyc", "**/.DS_Store"}
-
-// geminiShared are the entries of ~/.gemini that Antigravity (Desktop, IDE
-// and the agy CLI) loads as global configuration: the global rules and what
-// it reads from config/. The rest belongs to one machine: config/config.json
-// with its per-machine settings, config/projects, and the antigravity*
-// directories with conversations, caches and installation IDs.
-var geminiShared = []string{
-	"GEMINI.md",
-	"config/agents", "config/global_workflows", "config/hooks.json",
-	"config/mcp_config.json", "config/plugins", "config/skills",
-}
 
 // SyncFolders returns the folders of agent configuration to sync: the
 // directory the agents share, ~/.agents, where the skills and usually the
@@ -75,7 +65,7 @@ func SyncFolders(opts Options) ([]SyncFolder, error) {
 		{Name: "agents", Label: "Agents", Path: filepath.Join(home, ".agents"), Ignore: agentsJunk},
 		{Name: string(model.Claude), Label: "Claude Code", Path: claude.PathsFor(home).ConfigDir, Ignore: only(claude.Shared)},
 		{Name: string(model.Codex), Label: "Codex", Path: codex.ConfigDir(home), Ignore: only(codex.Shared)},
-		{Name: model.GeminiFolder, Label: "Antigravity", Path: filepath.Join(home, ".gemini"), Ignore: only(geminiShared)},
+		{Name: model.GeminiFolder, Label: "Antigravity", Path: antigravity.PathsFor(home).Dir, Ignore: only(antigravity.Shared)},
 	}
 	for i, f := range folders {
 		folders[i].Ignore = append(append([]string{}, exclude[f.Name]...), f.Ignore...)

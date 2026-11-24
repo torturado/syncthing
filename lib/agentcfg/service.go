@@ -308,9 +308,9 @@ func (s *Service) refresh(ctx context.Context) (specTarget, []string) {
 		return target, s.checkLocked(ctx, st, agentcfglib.Options{Home: s.home})
 	}
 	opts := agentcfglib.Options{SpecPath: target.path, Home: s.home, HostNames: s.hostNames(ctx)}
-	if cfg.Options.AgentcfgApply == config.AgentcfgApplyAuto {
-		if !target.explicit {
-			st.ApplyError = "automatic apply needs agentcfgSpecPath; a spec found in a shared folder is only checked"
+	if cfg.Options.AgentcfgAutoApply() {
+		if !target.explicit && target.folder != agentsFolderID {
+			st.ApplyError = "automatic apply needs agentcfgSpecPath, or the spec at the root of " + agentsFolderID + "; a spec found in another shared folder is only checked"
 		} else {
 			report, err := agentcfglib.Apply(ctx, opts)
 			if err != nil {

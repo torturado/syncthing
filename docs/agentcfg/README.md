@@ -14,6 +14,8 @@ that is, where `~/.gemini/antigravity`, `antigravity-cli` or `antigravity-ide` e
 
 It lives in the Syncthing fork, which also runs it on its own: the library is
 `internal/agentcfg`, the command `cmd/agentcfg`, and the Syncthing service `lib/agentcfg`.
+The service checks on every change and, unless `agentcfgApply` is `off`, applies the spec in
+`~/.agents`, or the one `agentcfgSpecPath` names, whenever the configuration drifts.
 
 ## Install
 

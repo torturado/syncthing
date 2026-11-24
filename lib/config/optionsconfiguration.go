@@ -19,9 +19,11 @@ import (
 	"github.com/syncthing/syncthing/lib/structutil"
 )
 
-// AgentcfgApplyAuto is the OptionsConfiguration.AgentcfgApply value that
-// turns automatic apply on.
-const AgentcfgApplyAuto = "auto"
+// The OptionsConfiguration.AgentcfgApply values that name a mode.
+const (
+	AgentcfgApplyAuto = "auto"
+	AgentcfgApplyOff  = "off"
+)
 
 type OptionsConfiguration struct {
 	RawListenAddresses          []string `json:"listenAddresses" xml:"listenAddress" default:"default"`
@@ -105,8 +107,8 @@ type OptionsConfiguration struct {
 	// The spec to check against. Empty means agentcfg.toml at the root of
 	// the one shared folder that holds it.
 	AgentcfgSpecPath string `json:"agentcfgSpecPath" xml:"agentcfgSpecPath"`
-	// "auto" writes the spec to the agents' configuration whenever it
-	// drifts; anything else, such as "off", only reports.
+	// Empty or "auto" writes the spec to the agents' configuration whenever
+	// it drifts; anything else, such as "off", only reports.
 	AgentcfgApply string `json:"agentcfgApply" xml:"agentcfgApply"`
 	// Seconds between checks when nothing triggers one sooner; zero means
 	// 600, and the minimum is 60.
@@ -192,6 +194,12 @@ func (opts OptionsConfiguration) RequiresRestartOnly() OptionsConfiguration {
 		return v != "true"
 	})
 	return optsCopy
+}
+
+// AgentcfgAutoApply reports whether agentcfg writes the spec whenever the
+// agents' configuration drifts.
+func (opts OptionsConfiguration) AgentcfgAutoApply() bool {
+	return opts.AgentcfgApply == "" || opts.AgentcfgApply == AgentcfgApplyAuto
 }
 
 func (opts OptionsConfiguration) IsStunDisabled() bool {

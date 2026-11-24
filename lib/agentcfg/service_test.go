@@ -279,11 +279,11 @@ func TestAutoApplyDoesNotTriggerItself(t *testing.T) {
 	}
 }
 
-func TestAutoApplyNeedsConfiguredSpec(t *testing.T) {
-	env := newTestEnv(t, func(cfg *config.Configuration) {
-		cfg.Options.AgentcfgApply = config.AgentcfgApplyAuto
-	})
+func TestAutoApplyNeedsAKnownSpec(t *testing.T) {
+	// Automatic apply is on by default.
+	env := newTestEnv(t, nil)
 	writeFile(t, filepath.Join(env.folder, SpecFileName), testSpec)
+	claudeJSON := filepath.Join(env.home, ".claude.json")
 
 	env.start(t)
 	waitFor(t, "the check", func() bool { return env.svc.Status().Report != nil })
@@ -291,8 +291,22 @@ func TestAutoApplyNeedsConfiguredSpec(t *testing.T) {
 	if st.Report.Errors != 1 || st.LastApply != nil || !strings.Contains(st.ApplyError, "agentcfgSpecPath") {
 		t.Errorf("status = %+v; want the drift reported, nothing applied, and why", st)
 	}
-	if got := readFile(t, filepath.Join(env.home, ".claude.json")); got != "{}" {
-		t.Errorf("a spec found in a folder was applied: %q", got)
+	if got := readFile(t, claudeJSON); got != "{}" {
+		t.Errorf("a spec found in another folder was applied: %q", got)
+	}
+
+	// The spec in ~/.agents, which the service shares itself, is applied.
+	if err := os.Remove(filepath.Join(env.folder, SpecFileName)); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(env.home, ".agents", SpecFileName), testSpec)
+	env.markPeer(t, true)
+	waitFor(t, "the spec in ~/.agents to be applied", func() bool {
+		st := env.svc.Status()
+		return st.Folder == agentsFolderID && st.LastApply != nil && st.LastApply.Written && reportErrors(st) == 0
+	})
+	if !strings.Contains(readFile(t, claudeJSON), "search.example.com") {
+		t.Error("the server was not written")
 	}
 }
 

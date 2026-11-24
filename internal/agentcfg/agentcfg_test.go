@@ -21,6 +21,8 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/syncthing/syncthing/internal/agentcfg"
+	stfs "github.com/syncthing/syncthing/lib/fs"
+	"github.com/syncthing/syncthing/lib/ignore"
 )
 
 var secretVariables = []string{"SEARCH_API_KEY", "DEPLOY_TOKEN", "EVENTS_TOKEN"}
@@ -285,6 +287,96 @@ func TestApplyCorrectsDriftAndKeepsAgentState(t *testing.T) {
 	}
 	if len(again.Files) != 0 {
 		t.Errorf("second apply changed %+v", again.Files)
+	}
+}
+
+func TestAntigravityGetsTheValuesItCannotExpand(t *testing.T) {
+	setVariables(t, true)
+	home := copyHome(t, "clean")
+	opts := options(t, home, baseSpec, "desktop")
+	if err := os.MkdirAll(filepath.Join(home, ".gemini", "antigravity-cli"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mcpConfig := filepath.Join(home, ".gemini", "config", "mcp_config.json")
+	hooks := filepath.Join(home, ".gemini", "config", "hooks.json")
+	writeTestFile(t, mcpConfig, `{
+  "mcpServers": {
+    "search": { "serverUrl": "https://old.example.com/mcp", "headers": { "X-API-Key": "${SEARCH_API_KEY}" }, "timeoutSeconds": 600 },
+    "research": { "serverUrl": "https://research.example.com/mcp", "headers": { "Authorization": "Bearer abc" } },
+    "old": { "command": "old-server", "disabled": true }
+  }
+}
+`)
+	writeTestFile(t, hooks, `{
+  "lint": { "PostToolUse": [{ "matcher": "run_command", "hooks": [{ "command": "./lint.sh" }] }] },
+  "init": { "SessionStart": [{ "type": "command", "command": "./init.sh" }] },
+  "off": { "enabled": false, "Stop": [{ "command": "./stop.sh" }] }
+}
+`)
+
+	// Antigravity would send ${SEARCH_API_KEY} as written.
+	assertFindings(t, findings(t, opts), []string{
+		"antigravity error literal-secret mcpServers.research.headers.Authorization",
+		"antigravity error missing-server mcp_servers.deploy",
+		"antigravity error server-mismatch search",
+		"antigravity error server-mismatch search",
+		"antigravity error undeclared-hook PostToolUse",
+		"antigravity error undeclared-hook SessionStart",
+		"antigravity error undeclared-server research",
+		"antigravity error unexpanded-variable mcpServers.search.headers.X-API-Key",
+	})
+
+	if _, err := agentcfg.Apply(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	assertFindings(t, findings(t, opts), nil)
+	var got struct {
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(readFile(t, mcpConfig)), &got); err != nil {
+		t.Fatal(err)
+	}
+	search, deploy := got.MCPServers["search"], got.MCPServers["deploy"]
+	if search["serverUrl"] != "https://search.example.com/mcp" || search["headers"].(map[string]any)["X-API-Key"] != "value" || search["timeoutSeconds"] != 600.0 {
+		t.Errorf("search = %v; want the spec's url and key, and its timeout kept", search)
+	}
+	if deploy["headers"].(map[string]any)["Authorization"] != "Bearer value" {
+		t.Errorf("deploy = %v; want the token written", deploy)
+	}
+	if _, ok := got.MCPServers["research"]; ok {
+		t.Error("the undeclared server was kept")
+	}
+	if _, ok := got.MCPServers["old"]; !ok {
+		t.Error("a disabled server, which check does not report, was removed")
+	}
+	if text := readFile(t, hooks); strings.Contains(text, "lint") || strings.Contains(text, "init") || !strings.Contains(text, "./stop.sh") {
+		t.Errorf("hooks.json = %s; want only the disabled hook", text)
+	}
+	if again, err := agentcfg.Apply(context.Background(), opts); err != nil || len(again.Files) != 0 {
+		t.Errorf("second apply changed %+v (%v)", again.Files, err)
+	}
+
+	// Without the value, the server is left as it is rather than removed.
+	os.Unsetenv("DEPLOY_TOKEN")
+	plan, err := agentcfg.Plan(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(plan.Files, func(f agentcfg.FileChange) bool { return f.Path == mcpConfig }) {
+		t.Errorf("plan changes %s without the value: %+v", mcpConfig, plan.Files)
+	}
+	if got := findings(t, opts); !slices.Contains(got, "antigravity warning unset-variable mcp_servers.deploy") {
+		t.Errorf("findings = %q; want the unset variable", got)
+	}
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -593,6 +685,28 @@ func TestSyncFoldersShareConfigurationOnlyAndExcludeWhatTheSpecSays(t *testing.T
 	}
 	if agents := byName["agents"]; agents.Path != filepath.Join(home, ".agents") || slices.Contains(agents.Ignore, "/*") {
 		t.Errorf("agents folder = %+v; want all of ~/.agents", agents)
+	}
+
+	// Antigravity's global configuration syncs; what each machine keeps in
+	// ~/.gemini, even next to it in config/, does not.
+	gemini := byName["gemini"]
+	if gemini.Path != filepath.Join(home, ".gemini") {
+		t.Errorf("gemini folder path = %q", gemini.Path)
+	}
+	matcher := ignore.New(stfs.NewFilesystem(stfs.FilesystemTypeFake, t.Name()))
+	if err := matcher.Parse(strings.NewReader(strings.Join(gemini.Ignore, "\n")), ".stignore"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"GEMINI.md", "config", "config/skills/impeccable/SKILL.md", "config/hooks.json", "config/global_workflows/release.md", "config/plugins/notify/plugin.json"} {
+		if matcher.Match(path).IsIgnored() {
+			t.Errorf("gemini folder leaves out %s", path)
+		}
+	}
+	// mcp_config.json holds the credentials apply writes for Antigravity.
+	for _, path := range []string{"config/mcp_config.json", "config/config.json", "config/projects/default-cli-project.json", "antigravity/conversations/a.db", "antigravity-cli/history.jsonl", "settings.json"} {
+		if !matcher.Match(path).IsIgnored() {
+			t.Errorf("gemini folder syncs %s", path)
+		}
 	}
 
 	// The spec's exclusions come first, so they win over what the agent shares.

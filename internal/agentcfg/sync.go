@@ -10,8 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"path/filepath"
+	"slices"
+	"strings"
 
+	"github.com/syncthing/syncthing/internal/agentcfg/antigravity"
 	"github.com/syncthing/syncthing/internal/agentcfg/claude"
 	"github.com/syncthing/syncthing/internal/agentcfg/codex"
 	"github.com/syncthing/syncthing/internal/agentcfg/model"
@@ -61,6 +65,7 @@ func SyncFolders(opts Options) ([]SyncFolder, error) {
 		{Name: "agents", Label: "Agents", Path: filepath.Join(home, ".agents"), Ignore: agentsJunk},
 		{Name: string(model.Claude), Label: "Claude Code", Path: claude.PathsFor(home).ConfigDir, Ignore: only(claude.Shared)},
 		{Name: string(model.Codex), Label: "Codex", Path: codex.ConfigDir(home), Ignore: only(codex.Shared)},
+		{Name: model.GeminiFolder, Label: "Antigravity", Path: antigravity.PathsFor(home).Dir, Ignore: only(antigravity.Shared)},
 	}
 	for i, f := range folders {
 		folders[i].Ignore = append(append([]string{}, exclude[f.Name]...), f.Ignore...)
@@ -69,11 +74,25 @@ func SyncFolders(opts Options) ([]SyncFolder, error) {
 }
 
 // only returns the patterns that sync the given entries of a directory and
-// nothing else in it.
+// nothing else in it. An entry may lie in a subdirectory, such as
+// config/skills; the rest of that subdirectory stays out too.
 func only(entries []string) []string {
-	patterns := make([]string, 0, len(entries)+1)
+	var patterns, parents []string
 	for _, entry := range entries {
 		patterns = append(patterns, "!/"+entry)
+		for dir := path.Dir(entry); dir != "."; dir = path.Dir(dir) {
+			if !slices.Contains(parents, dir) {
+				parents = append(parents, dir)
+			}
+		}
+	}
+	// The first match wins, so a deeper directory comes before its parent:
+	// its other entries are left out, then the directory itself is kept.
+	slices.SortStableFunc(parents, func(a, b string) int {
+		return strings.Count(b, "/") - strings.Count(a, "/")
+	})
+	for _, dir := range parents {
+		patterns = append(patterns, "/"+dir+"/*", "!/"+dir)
 	}
 	return append(patterns, "/*")
 }

@@ -16,6 +16,7 @@ package spec
 import (
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -43,8 +44,9 @@ type Layer struct {
 	// Hooks lists, per agent, the hook commands allowed to exist. Any other
 	// hook is reported; an agent without an entry allows none.
 	Hooks map[model.Agent][]string `toml:"hooks"`
-	// Plugins lists the Claude Code plugins (name@marketplace) allowed to be
-	// enabled machine-wide.
+	// Plugins lists the plugins allowed: for Claude Code those enabled
+	// machine-wide (name@marketplace), for Antigravity those installed in
+	// ~/.gemini/config/plugins (the directory name).
 	Plugins map[model.Agent][]string `toml:"plugins"`
 }
 
@@ -220,8 +222,8 @@ func (layer Layer) validate(prefix, path string) error {
 		}
 	}
 	for agent := range layer.Plugins {
-		if agent != model.Claude {
-			return fmt.Errorf("%s: %splugins: only claude plugins are supported, not %q", path, prefix, agent)
+		if agent != model.Claude && agent != model.Antigravity {
+			return fmt.Errorf("%s: %splugins: only claude and antigravity plugins are supported, not %q", path, prefix, agent)
 		}
 	}
 	return nil
@@ -267,6 +269,51 @@ func checkValue(where, name, value string) error {
 		return fmt.Errorf("%s: credential written in the spec; reference a variable such as ${NAME}", where)
 	}
 	return nil
+}
+
+// reference is a ${VAR} or ${VAR:-default} reference, capturing the default.
+var reference = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
+
+// Expand replaces the references in a server with the values lookup
+// returns, as Claude Code expands them: a default applies when the variable
+// is unset or empty. It returns the variables without a value or default;
+// while there are any, the server cannot be written.
+func (s Server) Expand(lookup func(string) (string, bool)) (Server, []string) {
+	var missing []string
+	expand := func(value string) string {
+		return reference.ReplaceAllStringFunc(value, func(ref string) string {
+			match := reference.FindStringSubmatch(ref)
+			if value, ok := lookup(match[1]); ok && value != "" {
+				return value
+			}
+			if strings.Contains(ref, ":-") {
+				return match[2]
+			}
+			if !slices.Contains(missing, match[1]) {
+				missing = append(missing, match[1])
+			}
+			return ref
+		})
+	}
+	out := s
+	out.URL, out.Command = expand(s.URL), expand(s.Command)
+	out.Args = nil
+	for _, arg := range s.Args {
+		out.Args = append(out.Args, expand(arg))
+	}
+	out.Env, out.Headers = expandValues(s.Env, expand), expandValues(s.Headers, expand)
+	return out, missing
+}
+
+func expandValues(values map[string]string, expand func(string) string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = expand(value)
+	}
+	return out
 }
 
 // CodexMCPServer is a spec server in the shape of a Codex config.toml

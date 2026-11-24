@@ -343,17 +343,11 @@ func servers(entries map[string]mcpServer, scope, source, prefix string, enabled
 	return result
 }
 
-// field classifies a value without keeping it: a value with no ${VAR}
-// reference is written in the file.
+// field is model.NewField without the plugin variables, which Claude Code
+// always sets.
 func field(kind model.FieldKind, name, path, value string) model.Field {
-	f := model.Field{Kind: kind, Name: name, Path: path, Sum: model.ValueSum(value)}
-	matches := model.EnvRef.FindAllStringSubmatch(value, -1)
-	for _, match := range matches {
-		if !slices.Contains(pluginVariables, match[1]) {
-			f.EnvRefs = append(f.EnvRefs, match[1])
-		}
-	}
-	f.Literal = len(matches) == 0 && value != ""
+	f := model.NewField(kind, name, path, value)
+	f.EnvRefs = slices.DeleteFunc(f.EnvRefs, func(v string) bool { return slices.Contains(pluginVariables, v) })
 	return f
 }
 

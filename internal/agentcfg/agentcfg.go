@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/syncthing/syncthing/internal/agentcfg/antigravity"
 	"github.com/syncthing/syncthing/internal/agentcfg/check"
 	"github.com/syncthing/syncthing/internal/agentcfg/claude"
 	"github.com/syncthing/syncthing/internal/agentcfg/codex"
@@ -142,7 +143,9 @@ func Plan(ctx context.Context, opts Options) (ApplyReport, error) {
 
 // Apply writes the MCP servers declared in the spec and removes the hooks it
 // does not allow. Every other key, including project trust and Codex's
-// hooks.state, is kept. Running it again changes nothing.
+// hooks.state, is kept. Running it again changes nothing. For Antigravity,
+// which does not expand ${VAR}, the values come from the environment Apply
+// runs in.
 func Apply(ctx context.Context, opts Options) (ApplyReport, error) {
 	opts, desired, err := prepare(ctx, opts)
 	if err != nil {
@@ -192,7 +195,7 @@ func WatchPaths(opts Options) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(claude.WatchPaths(home), codex.WatchPaths(home)...), nil
+	return slices.Concat(antigravity.WatchPaths(home), claude.WatchPaths(home), codex.WatchPaths(home)), nil
 }
 
 // DefaultHostNames are the machine's hostname, without and with its domain,
@@ -275,7 +278,7 @@ func homeDir(home string) (string, error) {
 
 func inventory(home string) (model.Inventory, error) {
 	var inv model.Inventory
-	for _, read := range []func(string) (model.Inventory, error){claude.Inventory, codex.Inventory} {
+	for _, read := range []func(string) (model.Inventory, error){antigravity.Inventory, claude.Inventory, codex.Inventory} {
 		agentInv, err := read(home)
 		if err != nil {
 			return inv, err
@@ -298,7 +301,11 @@ func plan(home string, desired spec.Spec) ([]model.FileEdit, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(claudeEdits, codexEdits...), nil
+	antigravityEdits, err := antigravity.Plan(home, desired, inv, os.LookupEnv)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Concat(antigravityEdits, claudeEdits, codexEdits), nil
 }
 
 func applyReport(opts Options, desired spec.Spec, edits []model.FileEdit, written bool) ApplyReport {

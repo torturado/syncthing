@@ -8,7 +8,9 @@ It reads only the configuration that applies machine-wide and leaves agent state
 project trust, session history and per-repository `.mcp.json` files are never reported or
 written.
 
-Supported agents: Claude Code and Codex CLI.
+Supported agents: Claude Code, Codex CLI and Antigravity (the app, the IDE and the `agy` CLI,
+which share `~/.gemini/config`). Antigravity is checked only on a machine where it has run,
+that is, where `~/.gemini/antigravity`, `antigravity-cli` or `antigravity-ide` exists.
 
 It lives in the Syncthing fork, which also runs it on its own: the library is
 `internal/agentcfg`, the command `cmd/agentcfg`, and the Syncthing service `lib/agentcfg`.
@@ -60,13 +62,14 @@ headers = { "X-API-Key" = "${SEARCH_API_KEY}" }
 [mcp_servers.local-files]
 command = "mcp-files"
 args = ["--root", "~/notes"]
-agents = ["claude"]      # default: every supported agent
+agents = ["claude"]      # default: every supported agent (antigravity, claude, codex)
 
 [hooks]
 claude = ["bash ~/.claude/hooks/notify.sh"]   # allowed hook commands; omitted agent = none
 
 [plugins]
 claude = ["formatter@official"]               # allowed Claude Code plugins
+antigravity = ["notify"]                      # allowed Antigravity plugins, by directory
 
 [roles.build]
 mcp_servers.registry = { url = "https://registry.example.ts.net/mcp" }
@@ -98,6 +101,7 @@ identical, with their Syncthing ignore patterns; the Syncthing fork shares them 
 | `agents` | `~/.agents` | Everything (skills, the spec, `secrets.age`), except `.git`, `node_modules` and Python caches. |
 | `claude` | `~/.claude` | `CLAUDE.md`, `settings.json`, `keybindings.json`, `agents/`, `commands/`, `output-styles/`, `rules/` and `themes/`. |
 | `codex` | `~/.codex` | `AGENTS.md`, `config.toml` and `rules/`. |
+| `gemini` | `~/.gemini` | What Antigravity loads globally: `GEMINI.md`, and `skills/`, `hooks.json`, `global_workflows/`, `agents/` and `plugins/` in `config/`. Not `config/mcp_config.json`, which holds the credentials `apply` writes, nor `config/config.json` and `config/projects/`, which hold per-machine settings, nor the `antigravity*` directories. |
 
 Everything else in an agent's own directory, such as credentials, sessions, history, caches
 and databases, stays on each machine, including whatever a later version of the agent adds
@@ -113,10 +117,10 @@ They can only exclude: a pattern that starts with `!`, or a `#include` directive
 | `undeclared-server` | error | An enabled server is not in the spec, in any scope, including one a plugin brings. |
 | `undeclared-hook` | error | A hook is not in the spec, such as one reinstalled by another tool or carried by a plugin. |
 | `undeclared-plugin` | error | A Claude Code plugin is enabled machine-wide but not in the spec. |
-| `unexpanded-variable` | error | A Claude Code settings `env` value references `${VAR}`, which Claude Code passes on as written. |
-| `literal-secret` | error | A credential header, token or variable is written in the file instead of referenced. |
+| `unexpanded-variable` | error | A Claude Code settings `env` value, or an Antigravity MCP header or variable, references `${VAR}`, which the agent passes on as written. |
+| `literal-secret` | error | A credential header, token or variable is written in the file instead of referenced. For Antigravity, a credential other than the value `apply` writes from the spec. |
 | `shadowed-server` | warning | The same server is defined in several scopes. |
-| `unset-variable` | warning | A referenced variable is not set where the check ran, so the server may start unauthenticated. |
+| `unset-variable` | warning | A referenced variable is not set where the check ran, so the server may start unauthenticated, or, for Antigravity, `apply` cannot write it. |
 
 Secret values are never read into the report: a field only records whether it is written in
 the file, which variables it references and a digest to compare it with the spec. URLs and hook
@@ -135,6 +139,8 @@ query values, the value after a credential name (`Authorization: …`, `api_key=
 | `~/.claude/settings.json` | Hooks not in the spec are removed. Permissions, env and the rest are kept. |
 | `~/.codex/config.toml` | The `mcp_servers` tables it changes, and inline hook events. Never `projects` or the `hooks.state` trust store. Comments and other tables are kept. |
 | `~/.codex/hooks.json` | Hooks not in the spec are removed. |
+| `~/.gemini/config/mcp_config.json` | `mcpServers`, with every `${VAR}` replaced by its value (see below). Disabled servers the spec does not declare are kept. |
+| `~/.gemini/config/hooks.json` | Hooks not in the spec are removed; a hook with `"enabled": false` is kept. |
 
 A declared server enabled in `~/.mcp.json` is corrected there, and one enabled with the same
 target in managed settings is left there; neither is added to `~/.claude.json`, though an entry
@@ -145,6 +151,13 @@ kept. An undeclared Codex server with `enabled = false` is left alone, as `check
 the spec lists the hooks allowed, not where they go. Plugins and managed files are reported but
 never changed.
 
+Antigravity does not expand `${VAR}` in `mcp_config.json`: it would send `Bearer ${TOKEN}` as
+written. So `apply` writes the values, taken from the environment it runs in, which for the
+Syncthing service is the systemd user environment that `agentcfg secrets sync` fills. A
+declared server with a variable that is not set is left as it is, and `check` warns. The file
+is not synced, so the values stay on each machine; give it mode 0600 if it already exists, as
+`apply` keeps the mode of the files it rewrites.
+
 Writes are atomic (temporary file and rename). A symlink is kept: the file it points to is
 written, with its mode. Before each run's first write the previous content is copied to
 `$XDG_STATE_HOME/agentcfg/backups/<time>/`, and the last 20 runs are kept. If an agent rewrites
@@ -154,7 +167,8 @@ Running `apply` twice changes nothing the second time.
 ## Secrets
 
 Synced files hold only references (`${VAR}` for Claude, `env_http_headers` and
-`bearer_token_env_var` for Codex). The values live in `secrets.age` next to the spec,
+`bearer_token_env_var` for Codex). Antigravity, which cannot reference a value, gets it
+written into its unsynced `mcp_config.json` by `apply`. The values live in `secrets.age` next to the spec,
 encrypted to the `age_recipient` of every host, so the file can travel through the same synced
 folder.
 
@@ -214,6 +228,7 @@ folders, err := agentcfg.SyncFolders(opts) // folders to sync and their ignore p
 |---|---|
 | Claude Code | `~/.claude/settings.json`, `~/.claude.json` (user and local MCP scopes only), `~/.mcp.json`, `/etc/claude-code/managed-settings.json`, `managed-settings.d/`, `managed-mcp.json`, and for each plugin enabled in those settings: `plugins/installed_plugins.json`, its `hooks/hooks.json`, `.mcp.json` and the hooks or servers its `plugin.json` adds. Honors `CLAUDE_CONFIG_DIR`. |
 | Codex CLI | `~/.codex/config.toml` (ignoring the `hooks.state` trust store), `~/.codex/hooks.json`, `/etc/codex/config.toml`. Honors `CODEX_HOME`. |
+| Antigravity | `~/.gemini/config/mcp_config.json`, `~/.gemini/config/hooks.json`, and for each plugin in `~/.gemini/config/plugins/` (a directory with a `plugin.json`): its `mcp_config.json`, whose servers are named `plugin:<plugin>:<server>`, and its `hooks.json`. Not workspace `.agents/` directories, nor the legacy per-product `mcp_config.json` files. |
 
 ## Development
 

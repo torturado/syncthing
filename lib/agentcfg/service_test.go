@@ -353,9 +353,9 @@ func TestAgentFoldersAreSharedWithTheMarkedDevices(t *testing.T) {
 	}
 
 	env.markPeer(t, true)
-	waitFor(t, "the three folders", func() bool { return len(env.keptFolders()) == 3 })
+	waitFor(t, "the four folders", func() bool { return len(env.keptFolders()) == 4 })
 	kept := env.keptFolders()
-	for id, path := range map[string]string{"agentcfg-agents": ".agents", "agentcfg-claude": ".claude", "agentcfg-codex": ".codex"} {
+	for id, path := range map[string]string{"agentcfg-agents": ".agents", "agentcfg-claude": ".claude", "agentcfg-codex": ".codex", "agentcfg-gemini": ".gemini"} {
 		f := kept[id]
 		if f.Path != filepath.Join(env.home, path) || f.Type != config.FolderTypeSendReceive || !slices.Equal(f.DeviceIDs(), []protocol.DeviceID{peerID, protocol.LocalDeviceID}) {
 			t.Errorf("%s = %s at %s with %v; want send-receive at ~/%s with this device and the peer", id, f.Type, f.Path, f.DeviceIDs(), path)
@@ -400,7 +400,7 @@ func TestAgentFolderTakenByAnotherFolderIsReported(t *testing.T) {
 	}
 	w.Wait()
 	env.start(t)
-	waitFor(t, "the other two folders", func() bool { return len(env.keptFolders()) == 2 })
+	waitFor(t, "the other three folders", func() bool { return len(env.keptFolders()) == 3 })
 	if _, ok := env.keptFolders()["agentcfg-codex"]; ok {
 		t.Error("~/.codex kept as a second folder")
 	}
@@ -420,7 +420,7 @@ func TestJoiningDeviceYieldsToTheOthers(t *testing.T) {
 	// The peer already shares Claude Code's folder, but not Codex's.
 	env.scans.offer(peerID, "agentcfg-claude")
 	env.start(t)
-	waitFor(t, "the folders", func() bool { return len(env.keptFolders()) == 3 })
+	waitFor(t, "the folders", func() bool { return len(env.keptFolders()) == 4 })
 
 	mtime := func(path string) time.Time {
 		info, err := os.Stat(path)

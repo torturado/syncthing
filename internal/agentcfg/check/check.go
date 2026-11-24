@@ -41,9 +41,24 @@ func Run(desired spec.Spec, inv model.Inventory) []Finding {
 	var findings []Finding
 
 	for _, agent := range model.Agents {
+		if slices.Contains(inv.Absent, agent) {
+			continue
+		}
 		for name, want := range desired.MCPServers {
 			if !want.AppliesTo(agent) {
 				continue
+			}
+			if !agent.ExpandsVariables() {
+				// The agent gets the values, which apply writes from the
+				// environment, so they are compared with what it would write.
+				expanded, missing := want.Expand(os.LookupEnv)
+				for _, variable := range missing {
+					findings = append(findings, Finding{Warning, agent, "unset-variable", "", "mcp_servers." + name, variable + " is not set in this environment, so apply cannot write the server"})
+				}
+				if len(missing) > 0 {
+					continue
+				}
+				want = expanded
 			}
 			var found []model.MCPServer
 			for _, server := range inv.MCPServers {
@@ -76,6 +91,10 @@ func Run(desired spec.Spec, inv model.Inventory) []Finding {
 		want, declared := desired.MCPServers[server.Name]
 		if server.Enabled && (!declared || !want.AppliesTo(server.Agent)) {
 			findings = append(findings, Finding{Error, server.Agent, "undeclared-server", server.Source, server.Name, "enabled in scope " + server.Scope + " but not in the spec"})
+		}
+		if !server.Agent.ExpandsVariables() {
+			findings = append(findings, writtenFieldFindings(server, want, declared)...)
+			continue
 		}
 		for _, field := range server.Fields {
 			findings = append(findings, fieldFindings(server.Agent, server.Source, field, server.Enabled)...)
@@ -130,6 +149,42 @@ func fieldFindings(agent model.Agent, source string, field model.Field, enabled 
 			if _, set := os.LookupEnv(variable); !set {
 				findings = append(findings, Finding{Warning, agent, "unset-variable", source, field.Path, variable + " is not set in this environment"})
 			}
+		}
+	}
+	return findings
+}
+
+// writtenFieldFindings checks the fields of an agent that does not expand
+// ${VAR}: a reference reaches the server as written, and a credential must
+// be the value apply wrote from the spec, since the file cannot reference it.
+func writtenFieldFindings(server model.MCPServer, want spec.Server, declared bool) []Finding {
+	var expected map[string][32]byte
+	if declared && want.AppliesTo(server.Agent) {
+		if expanded, missing := want.Expand(os.LookupEnv); len(missing) == 0 {
+			expected = map[string][32]byte{}
+			for name, value := range expanded.Headers {
+				expected["header "+strings.ToLower(name)] = model.ValueSum(value)
+			}
+			for name, value := range expanded.Env {
+				expected["env "+name] = model.ValueSum(value)
+			}
+		}
+	}
+	var findings []Finding
+	for _, field := range server.Fields {
+		if len(field.EnvRefs) > 0 {
+			findings = append(findings, Finding{Error, server.Agent, "unexpanded-variable", server.Source, field.Path, "the agent does not expand ${VAR} and sends the text as written; declare the server in the spec, and apply writes the value"})
+			continue
+		}
+		key := "header " + strings.ToLower(field.Name)
+		if field.Kind == model.EnvField {
+			key = "env " + field.Name
+		}
+		if sum, ok := expected[key]; ok && sum == field.Sum {
+			continue
+		}
+		if field.Literal && (field.Kind == model.TokenField || model.SecretName.MatchString(field.Name)) {
+			findings = append(findings, Finding{Error, server.Agent, "literal-secret", server.Source, field.Path, "credential written in the file and not by the spec; declare the server in the spec with a ${VAR} reference, and apply writes the value"})
 		}
 	}
 	return findings

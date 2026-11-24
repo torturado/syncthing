@@ -19,16 +19,25 @@ import (
 type Agent string
 
 const (
-	Claude Agent = "claude"
-	Codex  Agent = "codex"
+	Antigravity Agent = "antigravity"
+	Claude      Agent = "claude"
+	Codex       Agent = "codex"
 )
 
 // Agents lists every supported agent in report order.
-var Agents = []Agent{Claude, Codex}
+var Agents = []Agent{Antigravity, Claude, Codex}
+
+// ExpandsVariables reports whether the agent replaces ${VAR} in its MCP
+// server configuration with the variable's value. Antigravity sends the
+// text as written, so agentcfg writes the values for it.
+func (a Agent) ExpandsVariables() bool { return a != Antigravity }
+
+// GeminiFolder names the synced folder ~/.gemini, Antigravity's directory.
+const GeminiFolder = "gemini"
 
 // SyncFolders names the folders of agent configuration that machines keep in
 // sync: the directory the agents share, ~/.agents, and each agent's own.
-var SyncFolders = []string{"agents", string(Claude), string(Codex)}
+var SyncFolders = []string{"agents", string(Claude), string(Codex), GeminiFolder}
 
 // SecretName matches header and variable names that carry credentials.
 var SecretName = regexp.MustCompile(`(?i)authorization|token|secret|passw|api[-_]?key|cookie|credential|private[-_]?key|(^|[-_])key$`)
@@ -61,6 +70,18 @@ type Field struct {
 
 func ValueSum(value string) [sha256.Size]byte { return sha256.Sum256([]byte(value)) }
 
+// NewField classifies a value without keeping it: a value with no ${VAR}
+// reference is written in the file.
+func NewField(kind FieldKind, name, path, value string) Field {
+	f := Field{Kind: kind, Name: name, Path: path, Sum: ValueSum(value)}
+	matches := EnvRef.FindAllStringSubmatch(value, -1)
+	for _, match := range matches {
+		f.EnvRefs = append(f.EnvRefs, match[1])
+	}
+	f.Literal = len(matches) == 0 && value != ""
+	return f
+}
+
 type MCPServer struct {
 	Agent   Agent
 	Name    string
@@ -80,7 +101,8 @@ type Hook struct {
 	Command string
 }
 
-// Plugin is a Claude Code plugin enabled in a machine-wide settings file.
+// Plugin is a Claude Code plugin enabled in a machine-wide settings file, or
+// an Antigravity plugin installed in ~/.gemini/config/plugins.
 type Plugin struct {
 	Agent  Agent
 	Name   string
@@ -99,9 +121,13 @@ type Inventory struct {
 	Hooks       []Hook
 	Plugins     []Plugin
 	SettingsEnv []SettingsEnv
+	// Absent are the agents not installed on the machine, which are
+	// neither checked nor written.
+	Absent []Agent
 }
 
 func (inv *Inventory) Merge(other Inventory) {
+	inv.Absent = append(inv.Absent, other.Absent...)
 	inv.MCPServers = append(inv.MCPServers, other.MCPServers...)
 	inv.Hooks = append(inv.Hooks, other.Hooks...)
 	inv.Plugins = append(inv.Plugins, other.Plugins...)

@@ -7,7 +7,8 @@ Status, 2026-11-20:
   token is rotated.
 - The fixes found before enabling automatic apply are in agentcfg `v0.1.0` (PRs
   torturado/agentcfg#2 and #3), which the fork requires since torturado/syncthing-agents#8.
-- Phase C is rolled out on the six machines, prod since 2026-11-23 (see C3).
+- Phase C is rolled out on the six machines, prod since 2026-11-23 (see C3). Antigravity
+  support is on five since 2026-11-24; laptop is pending.
 
 Deviations from this plan, kept on purpose:
 - Automatic apply needs an explicit `agentcfgSpecPath`. A spec that is only found in a shared
@@ -237,6 +238,20 @@ changed since 2.1.5, so the packaged binary can take the database back.
     they were removed.
   - `skills/registro-obsidian` is excluded in `[sync.exclude]`: it points into `/root/obsidian`,
     which only server-a has, so it stays there and is removed elsewhere.
+- **Antigravity, 2026-11-24:** desktop, gpu-box, server-a, server-b and prod run the fork's
+  `main` at `715d8b237` (`v2.1.8-dev.37`, torturado/syncthing-agents#16), with the `agentcfg`
+  CLI from the same commit. The binaries from before are kept next to the new ones as
+  `syncthing-agentcfg.prev` and `agentcfg.prev`.
+  - desktop created `agentcfg-gemini` (`~/.gemini`) and offered it to the five others; the other
+    four joined the offer. Antigravity is installed only on desktop, so check skips it elsewhere.
+  - `agentcfgApply` is off on every machine. On desktop, `agentcfg apply --write` added `coolify`
+    and `keenable` to `~/.gemini/config/mcp_config.json`, which is not synced, and the file was
+    set to 0600.
+  - Checks passed:
+    - the four folders are at 100 % on the five, with no new conflict copies;
+    - `agentcfg check` reports 0 errors and 0 warnings on the five.
+  - Pending: laptop, which was off, still runs `v2.1.8-dev.18`, which does not know the folder.
+    It needs the new build before it joins.
 
 ## Rules for keeping the fork cheap
 

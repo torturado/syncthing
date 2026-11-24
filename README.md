@@ -40,9 +40,9 @@ against it: which MCP servers are configured, which hooks and plugins are
 installed, and whether a credential is written into a file instead of
 referenced. Antigravity cannot reference a credential, so `apply` writes the
 value into its `mcp_config.json`, which stays on each machine. The result shows in the GUI, and the **fleet view** shows every
-device's result, shared through the same folder. With `agentcfgApply` set to
-`auto` and `agentcfgSpecPath` pointing at the spec, a device corrects the drift
-itself.
+device's result, shared through the same folder. Each device also corrects the
+drift itself, unless `agentcfgApply` is `off`. It does so only with the spec in
+`~/.agents` or the one `agentcfgSpecPath` names.
 
 Credentials travel encrypted with [age][age] in `secrets.age`, and each machine
 decrypts them into a local environment file.

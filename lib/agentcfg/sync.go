@@ -29,6 +29,12 @@ import (
 // the folders meet without anyone choosing an ID or a path.
 const SyncFolderPrefix = "agentcfg-"
 
+// agentsFolderID is the kept folder at ~/.agents. Its spec is applied
+// automatically without agentcfgSpecPath: the service shares this folder
+// only with the devices marked agentcfgSync, so no newly offered folder can
+// take its place.
+const agentsFolderID = SyncFolderPrefix + "agents"
+
 // ignoreHeader opens the .stignore of a kept folder, which the service
 // rewrites whenever the patterns change.
 var ignoreHeader = []string{

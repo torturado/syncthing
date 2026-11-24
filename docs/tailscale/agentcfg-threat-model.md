@@ -22,7 +22,7 @@ spec. Nothing is shared with another device until the owner marks that device.
 | `agentcfgEnabled` | Check the agents' configuration in the home directory of the user that runs Syncthing against a spec, on triggers and every `agentcfgIntervalS` seconds. Show the report in the GUI and REST API. Keep the folders of agent configuration for the devices marked `agentcfgSync`. |
 | `agentcfgSync` (per device) | Share the folders of agent configuration with that device (A6). The GUI shows it as "Sync AI Agent Configuration" on the device, and offers it when a device shares those folders with this one. |
 | `agentcfgSpecPath` | The spec. Empty means `agentcfg.toml` at the root of the one shared folder that holds it. |
-| `agentcfgApply` | `auto` writes the spec whenever the configuration drifts; `off` only reports. |
+| `agentcfgApply` | Empty, the default, or `auto` writes the spec whenever the configuration drifts; `off` only reports. |
 | `agentcfgFleetEnabled` | Share this device's report with the other devices of the folder that holds the spec, as `.agentcfg/reports/<device ID>.json`, and show the reports they shared in the GUI. Requires `agentcfgEnabled`. |
 
 Out of scope:
@@ -81,10 +81,12 @@ Out of scope:
 - **A1. Writes are local decisions.** Files are written only by `apply`, and
   only when one of these holds:
   - The local owner asks for it through `POST /rest/agentcfg/apply`.
-  - `agentcfgApply` is `auto` **and** `agentcfgSpecPath` names the spec
-    explicitly. A spec that was found by looking at the shared folders is
-    checked, but never applied automatically, because a newly shared folder
-    could otherwise become the spec without anyone choosing it.
+  - `agentcfgApply` is not `off` (it is empty by default) **and** the spec is
+    the one `agentcfgSpecPath` names, or the one at the root of
+    `agentcfg-agents`, the folder at `~/.agents` that the service keeps itself
+    for the devices marked `agentcfgSync` (A6). A spec found in any other
+    shared folder is checked, but never applied automatically, because a newly
+    shared folder could otherwise become the spec without anyone choosing it.
 - **A2. The spec is found without guessing.** When `agentcfgSpecPath` is empty,
   the spec is `agentcfg.toml` at the root of a configured folder of the basic
   filesystem type that is not receive-encrypted. If no folder or more than one
@@ -164,7 +166,7 @@ Out of scope:
 
 | Case | Safe behaviour | Enforced by |
 |---|---|---|
-| F3a. A device that shares the spec's folder adds an MCP server with a command. | Devices with automatic apply and an explicit spec path write it, and their agents may then run the command. This is the delegated trust of the spec folder. Make the folder receive-only on devices that should not author the spec; those devices then cannot share their report (A4), so the fleet view trades against this hardening. | Trust assumptions. |
+| F3a. A device that shares the spec's folder adds an MCP server with a command. | Devices with automatic apply write it, and their agents may then run the command. This is the delegated trust of the spec folder. Make the folder receive-only on devices that should not author the spec; those devices then cannot share their report (A4), so the fleet view trades against this hardening. | Trust assumptions. |
 | F3b. A tailnet device auto-shares a new folder with `agentcfg.toml` at its root. | It is never applied automatically. With no other spec, it is checked and reported. With another spec already present, nothing is checked until one of them is removed, and the report says so. | A1, A2. |
 | F3c. Another tool rewrites a file agentcfg owns. | With automatic apply, agentcfg corrects it after the debounce. Two tools that disagree alternate at the other tool's pace. | A3. |
 | F3d. Another device wants this device to apply. | There is no way to ask: shared reports are only read. | A5. |
@@ -217,7 +219,7 @@ Out of scope:
 | A symlinked reports directory does not lead outside the folder. | A4, F1e | `lib/agentcfg`: `TestFleetStaysInsideTheFolder`. |
 | A report withdrawn while the spec is missing comes back with it. | A4 | `lib/agentcfg`: `TestFleetSharesReportsThroughTheSpecFolder`. |
 | Our own writes do not trigger another run, other tools' writes do. | A3, F3c | `lib/agentcfg`: automatic apply in a temporary home. |
-| A discovered spec is never applied automatically. | A1, F3b | `lib/agentcfg`: automatic apply without `agentcfgSpecPath`. |
+| A spec found outside `~/.agents` is never applied automatically; the one in `~/.agents` is, by default. | A1, F3b | `lib/agentcfg`: automatic apply without `agentcfgSpecPath`. |
 | The REST endpoints need the API key or a session, and CSRF protection. | Trust assumptions | They are registered on the same router as every other `/rest` endpoint. |
 | The folders are kept for exactly the marked devices, with only the agents' configuration and the spec's exclusions first, and removed once no device is marked. The files stay. | A6, F6d, F6g | `lib/agentcfg`: `TestAgentFoldersAreSharedWithTheMarkedDevices`. |
 | A directory that another folder already syncs is not shared twice. | A6, F6f | `lib/agentcfg`: `TestAgentFolderTakenByAnotherFolderIsReported`. |

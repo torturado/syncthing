@@ -94,6 +94,7 @@ type mcpConfig struct {
 // hookEntry is an event's entry: a matcher group, or a handler itself.
 type hookEntry struct {
 	model.HookHandler
+
 	Hooks []model.HookHandler `json:"hooks"`
 }
 

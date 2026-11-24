@@ -185,6 +185,9 @@ func (s *Service) follow(ctx context.Context) {
 	// The events are read beside the loop, which waits for runs: a
 	// subscriber that falls behind delays the event logger for everyone.
 	var target atomic.Pointer[specTarget]
+	// Until the first run finds the spec, an event about any folder's root
+	// spec concerns it.
+	target.Store(&specTarget{})
 	specChanged := make(chan struct{}, 1)
 	sub := s.evLogger.Subscribe(events.LocalIndexUpdated | events.ItemFinished)
 	defer sub.Unsubscribe()

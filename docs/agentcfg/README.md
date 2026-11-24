@@ -8,7 +8,8 @@ It reads only the configuration that applies machine-wide and leaves agent state
 project trust, session history and per-repository `.mcp.json` files are never reported or
 written.
 
-Supported agents: Claude Code and Codex CLI.
+Supported agents: Claude Code and Codex CLI. Antigravity's configuration is synced (see
+[Synced folders](#synced-folders)) but not checked.
 
 It lives in the Syncthing fork, which also runs it on its own: the library is
 `internal/agentcfg`, the command `cmd/agentcfg`, and the Syncthing service `lib/agentcfg`.
@@ -98,6 +99,7 @@ identical, with their Syncthing ignore patterns; the Syncthing fork shares them 
 | `agents` | `~/.agents` | Everything (skills, the spec, `secrets.age`), except `.git`, `node_modules` and Python caches. |
 | `claude` | `~/.claude` | `CLAUDE.md`, `settings.json`, `keybindings.json`, `agents/`, `commands/`, `output-styles/`, `rules/` and `themes/`. |
 | `codex` | `~/.codex` | `AGENTS.md`, `config.toml` and `rules/`. |
+| `gemini` | `~/.gemini` | What Antigravity (Desktop, IDE and the `agy` CLI) loads globally: `GEMINI.md`, and `skills/`, `mcp_config.json`, `hooks.json`, `global_workflows/`, `agents/` and `plugins/` in `config/`. Not `config/config.json` or `config/projects/`, which hold per-machine settings, nor the `antigravity*` directories. |
 
 Everything else in an agent's own directory, such as credentials, sessions, history, caches
 and databases, stays on each machine, including whatever a later version of the agent adds

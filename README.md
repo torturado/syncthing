@@ -1,7 +1,7 @@
 # syncthing-agents
 
 An unofficial fork of [Syncthing][syncthing] that keeps the configuration of AI
-coding agents (Claude Code and Codex CLI) the same on every machine you own, and
+coding agents (Claude Code, Codex CLI and Antigravity) the same on every machine you own, and
 that uses Tailscale to find and authorize those machines.
 
 It is Syncthing with additions. The sync engine, the protocol, the
@@ -17,7 +17,7 @@ Report problems with it here, not on Syncthing's forum or issue tracker.
 ### Agent configuration that syncs itself
 
 Mark a device with **Sync AI Agent Configuration** (*Edit device*, on both
-ends), and the fork shares three folders with it, with the same IDs and paths
+ends), and the fork shares four folders with it, with the same IDs and paths
 on every device:
 
 | Folder | Path | What syncs |
@@ -25,6 +25,7 @@ on every device:
 | `agentcfg-agents` | `~/.agents` | everything: skills, the spec, `secrets.age` |
 | `agentcfg-claude` | `~/.claude` | `CLAUDE.md`, `settings.json`, `keybindings.json`, `agents/`, `commands/`, `output-styles/`, `rules/`, `themes/` |
 | `agentcfg-codex` | `~/.codex` | `AGENTS.md`, `config.toml`, `rules/` |
+| `agentcfg-gemini` | `~/.gemini` | `GEMINI.md`, and in `config/`: `skills/`, `mcp_config.json`, `hooks.json`, `global_workflows/`, `agents/`, `plugins/` |
 
 Credentials, sessions, history and caches stay on each machine. No folder is
 set up by hand: the fork writes the ignore patterns, and a device that joins

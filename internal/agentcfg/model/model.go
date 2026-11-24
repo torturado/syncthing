@@ -26,9 +26,13 @@ const (
 // Agents lists every supported agent in report order.
 var Agents = []Agent{Claude, Codex}
 
+// GeminiFolder names the synced folder ~/.gemini, Antigravity's directory.
+// Antigravity is not an Agent: its configuration is synced, not checked.
+const GeminiFolder = "gemini"
+
 // SyncFolders names the folders of agent configuration that machines keep in
 // sync: the directory the agents share, ~/.agents, and each agent's own.
-var SyncFolders = []string{"agents", string(Claude), string(Codex)}
+var SyncFolders = []string{"agents", string(Claude), string(Codex), GeminiFolder}
 
 // SecretName matches header and variable names that carry credentials.
 var SecretName = regexp.MustCompile(`(?i)authorization|token|secret|passw|api[-_]?key|cookie|credential|private[-_]?key|(^|[-_])key$`)

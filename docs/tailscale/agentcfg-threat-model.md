@@ -41,7 +41,7 @@ Out of scope:
    runs, so writing these files is equivalent to running code as that user.
 2. The folders of agent configuration: `~/.agents`, with the skills, the
    spec, `secrets.age` and the reports, and the configuration entries of
-   `~/.claude` and `~/.codex` (A6). Skills, hooks and MCP servers in them run
+   `~/.claude`, `~/.codex` and `~/.gemini` (A6). Skills, hooks and MCP servers in them run
    as that user, so writing these folders is also equivalent to running code.
 3. The report: MCP server names, URLs and commands, hook commands, plugin
    names, file paths in the home directory, variable names and the host name.
@@ -112,8 +112,8 @@ Out of scope:
 
 - **A6. The folders of agent configuration are shared only by the owner's
   choice, and only configuration.** The service keeps one folder per directory
-  that agentcfg's `SyncFolders` lists: `~/.agents`, `~/.claude` and
-  `~/.codex`, or `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. Each has the ID
+  that agentcfg's `SyncFolders` lists: `~/.agents`, `~/.claude`,
+  `~/.codex` and `~/.gemini`, or `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. Each has the ID
   `agentcfg-<name>` on every device, so they meet without anyone choosing an ID
   or a path. A folder is shared with exactly the devices marked
   `agentcfgSync`, and with none while no device is marked. In that case the
@@ -123,7 +123,7 @@ Out of scope:
   shown. An untrusted device cannot be marked. Each folder's `.stignore` is
   written by the service before the folder first starts:
   - the spec's `[sync.exclude]` patterns for that folder;
-  - for `~/.claude` and `~/.codex`, the configuration entries and then `/*`,
+  - for `~/.claude`, `~/.codex` and `~/.gemini`, the configuration entries and then `/*`,
     so credentials, sessions, history, databases and anything that a later
     version of an agent adds stay on the device;
   - for `~/.agents`, repositories, dependencies and caches.
@@ -194,7 +194,7 @@ Out of scope:
 | F6a. A device that this one has not marked shares the folders with it. | Nothing syncs. The GUI shows one notice for that device, instead of three new-folder prompts with the wrong default path. Syncing starts only when the owner marks the device. | A6. |
 | F6b. An untrusted device is marked. | The configuration drops the mark, and nothing is shared with it. | A6, `DeviceConfiguration.prepare`. |
 | F6c. The spec's exclusions try to sync `.credentials.json` with `!`, or include another file. | agentcfg rejects the spec. Patterns that are already in place stay, the folders keep syncing, so the fix can arrive, and the status shows the error. | A6. |
-| F6d. An agent update adds a new state or credential file to `~/.claude` or `~/.codex`. | It is not synced: only the listed configuration entries are. | A6. |
+| F6d. An agent update adds a new state or credential file to `~/.claude`, `~/.codex` or `~/.gemini`. | It is not synced: only the listed configuration entries are. | A6. |
 | F6e. A device joins with a newer, default `settings.json`. | The other devices keep theirs. The joining device's copy becomes a conflict copy, which stays on that device because the root patterns ignore it. A conflict copy inside a synced directory, such as `agents/`, syncs like any other file. If the joining device is marked before the others offer the folders, Syncthing's usual rule applies, and the newer copy wins while the other becomes a conflict copy. | A6. |
 | F6f. `~/.claude` is already a folder with another ID. | It is not added a second time, so two folders never scan one directory. The status names the folder to remove. | A6. |
 | F6g. The last marked device is unmarked. | The folders are removed from the configuration, and the files stay on every device. | A6. |

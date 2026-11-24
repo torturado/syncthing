@@ -21,6 +21,8 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/syncthing/syncthing/internal/agentcfg"
+	stfs "github.com/syncthing/syncthing/lib/fs"
+	"github.com/syncthing/syncthing/lib/ignore"
 )
 
 var secretVariables = []string{"SEARCH_API_KEY", "DEPLOY_TOKEN", "EVENTS_TOKEN"}
@@ -593,6 +595,27 @@ func TestSyncFoldersShareConfigurationOnlyAndExcludeWhatTheSpecSays(t *testing.T
 	}
 	if agents := byName["agents"]; agents.Path != filepath.Join(home, ".agents") || slices.Contains(agents.Ignore, "/*") {
 		t.Errorf("agents folder = %+v; want all of ~/.agents", agents)
+	}
+
+	// Antigravity's global configuration syncs; what each machine keeps in
+	// ~/.gemini, even next to it in config/, does not.
+	gemini := byName["gemini"]
+	if gemini.Path != filepath.Join(home, ".gemini") {
+		t.Errorf("gemini folder path = %q", gemini.Path)
+	}
+	matcher := ignore.New(stfs.NewFilesystem(stfs.FilesystemTypeFake, t.Name()))
+	if err := matcher.Parse(strings.NewReader(strings.Join(gemini.Ignore, "\n")), ".stignore"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"GEMINI.md", "config", "config/skills/impeccable/SKILL.md", "config/mcp_config.json", "config/hooks.json", "config/global_workflows/release.md", "config/plugins/notify/plugin.json"} {
+		if matcher.Match(path).IsIgnored() {
+			t.Errorf("gemini folder leaves out %s", path)
+		}
+	}
+	for _, path := range []string{"config/config.json", "config/projects/default-cli-project.json", "antigravity/conversations/a.db", "antigravity-cli/history.jsonl", "settings.json"} {
+		if !matcher.Match(path).IsIgnored() {
+			t.Errorf("gemini folder syncs %s", path)
+		}
 	}
 
 	// The spec's exclusions come first, so they win over what the agent shares.

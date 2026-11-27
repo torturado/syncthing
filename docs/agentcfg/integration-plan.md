@@ -277,7 +277,8 @@ changed since 2.1.5, so the packaged binary can take the database back.
   CLI from the same commit; `.prev` holds `v2.1.8-dev.41`. Once the five ran it, the spec
   declared `[antigravity.gateway]`: CLIProxyAPI, the proxy Codex and Claude Code already use,
   with the key from `CLIPROXY_API_KEY` and twelve Gemini, Claude and GPT models, Gemini 4 Neon
-  first.
+  first. After review, the five moved to `915c038f9` (`v2.1.8-dev.46`), which also keeps the
+  file at mode 0600; `.prev` still holds `v2.1.8-dev.41`.
   - The fleet's model proxy serves the Gemini models of its Antigravity login only with an
     effort suffix (`gemini-4-argon-high`), while agy asks for the base name and sends the effort
     apart. The proxy's `oauth.model-alias.antigravity` now also exposes `gemini-3.8-flash`,
@@ -289,6 +290,8 @@ changed since 2.1.5, so the packaged binary can take the database back.
       with the gateway in the spec;
     - desktop's service wrote `~/.config/environment.d/agentcfg-antigravity.conf` (mode 0600)
       1 s after the spec changed; the other four, without Antigravity, write nothing;
+    - on `v2.1.8-dev.46`, the five report 0 errors and 0 warnings, and desktop's service set the
+      file back to 0600 within 15 s of a `chmod 644`;
     - after `systemctl --user daemon-reload` the user manager has the three variables, and in
       a new shell `agy -p` ran a shell command with the default model and `claude-opus-5-5`;
       the proxy's log shows the Gemini requests served by its Antigravity login;

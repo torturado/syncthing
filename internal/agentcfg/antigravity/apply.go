@@ -22,8 +22,9 @@ import (
 var ownedKeys = []string{"serverUrl", "url", "headers", "command", "args", "env", "disabled"}
 
 // Plan computes the edits that bring Antigravity to the spec: the servers
-// in ~/.gemini/config/mcp_config.json and the hooks in hooks.json. Other
-// keys of a server entry, such as timeoutSeconds or enabledTools, are kept.
+// in ~/.gemini/config/mcp_config.json, the hooks in hooks.json and the
+// gateway environment file. Other keys of a server entry, such as
+// timeoutSeconds or enabledTools, are kept.
 //
 // Antigravity does not expand ${VAR}, so the values are written from lookup,
 // the environment apply runs in. A declared server with a variable lookup
@@ -88,6 +89,14 @@ func Plan(home string, desired spec.Spec, inv model.Inventory, lookup func(strin
 			hooksEdit.Changes = append(hooksEdit.Changes, "remove hook "+hook)
 		}
 		edits = append(edits, hooksEdit)
+	}
+
+	gatewayEdit, _, err := planGateway(paths.GatewayEnv, desired.Gateway, lookup)
+	if err != nil {
+		return nil, err
+	}
+	if gatewayEdit != nil {
+		edits = append(edits, *gatewayEdit)
 	}
 	return edits, nil
 }

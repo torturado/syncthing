@@ -370,6 +370,75 @@ func TestAntigravityGetsTheValuesItCannotExpand(t *testing.T) {
 	}
 }
 
+func TestAntigravityGatewayIsWrittenToTheEnvironment(t *testing.T) {
+	setVariables(t, true)
+	t.Setenv("GATEWAY_KEY", "gateway-value")
+	home := copyHome(t, "clean")
+	if err := os.MkdirAll(filepath.Join(home, ".gemini", "antigravity-cli"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base, err := os.ReadFile(baseSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specPath := filepath.Join(t.TempDir(), "spec.toml")
+	writeTestFile(t, specPath, string(base)+`
+[antigravity.gateway]
+url = "https://gateway.example.ts.net:8317"
+api_key = "${GATEWAY_KEY}"
+models = ["gemini-4-neon", "claude-opus-5-5"]
+`)
+	opts := options(t, home, specPath, "desktop")
+	envFile := filepath.Join(home, ".config", "environment.d", "agentcfg-antigravity.conf")
+
+	assertFindings(t, findings(t, opts), []string{
+		"antigravity error gateway-mismatch antigravity.gateway",
+		"antigravity error missing-server mcp_servers.deploy",
+		"antigravity error missing-server mcp_servers.search",
+	})
+	if _, err := agentcfg.Apply(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	assertFindings(t, findings(t, opts), nil)
+	want := "# Written by agentcfg apply from [antigravity.gateway] in the spec. Do not edit or sync this file.\n" +
+		"AGY_LLM_GATEWAY_API_KEY='gateway-value'\n" +
+		"AGY_LLM_GATEWAY_MODELS='gemini-4-neon,claude-opus-5-5'\n" +
+		"AGY_LLM_GATEWAY_URL='https://gateway.example.ts.net:8317'\n"
+	if got := readFile(t, envFile); got != want {
+		t.Errorf("environment file =\n%s\nwant\n%s", got, want)
+	}
+	info, err := os.Stat(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("environment file mode = %v; want 0600", info.Mode().Perm())
+	}
+	if again, err := agentcfg.Apply(context.Background(), opts); err != nil || len(again.Files) != 0 {
+		t.Errorf("second apply changed %+v (%v)", again.Files, err)
+	}
+
+	// Without the key's value, the file is left as it is.
+	os.Unsetenv("GATEWAY_KEY")
+	plan, err := agentcfg.Plan(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Files) != 0 {
+		t.Errorf("plan changes files without the key: %+v", plan.Files)
+	}
+	assertFindings(t, findings(t, opts), []string{"antigravity warning unset-variable antigravity.gateway.api_key"})
+
+	// A spec without the gateway empties the file, so agy goes back to Google.
+	if _, err := agentcfg.Apply(context.Background(), options(t, home, baseSpec, "desktop")); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, envFile); strings.Contains(got, "AGY_") {
+		t.Errorf("environment file = %q; want no variables", got)
+	}
+	assertFindings(t, findings(t, options(t, home, baseSpec, "desktop")), nil)
+}
+
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

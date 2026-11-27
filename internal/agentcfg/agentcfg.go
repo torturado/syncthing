@@ -110,9 +110,13 @@ func Check(ctx context.Context, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	gatewayFindings, err := antigravity.GatewayFindings(opts.Home, desired, inv, os.LookupEnv)
+	if err != nil {
+		return Report{}, err
+	}
 	report := Report{
 		SchemaVersion: SchemaVersion, CheckedAt: time.Now().UTC(), Spec: opts.SpecPath, Host: desired.Host,
-		Findings:   check.Run(desired, inv),
+		Findings:   append(check.Run(desired, inv), gatewayFindings...),
 		MCPServers: len(inv.MCPServers), Hooks: len(inv.Hooks), Plugins: len(inv.Plugins),
 	}
 	if report.Findings == nil {
@@ -141,11 +145,11 @@ func Plan(ctx context.Context, opts Options) (ApplyReport, error) {
 	return applyReport(opts, desired, edits, false), nil
 }
 
-// Apply writes the MCP servers declared in the spec and removes the hooks it
-// does not allow. Every other key, including project trust and Codex's
-// hooks.state, is kept. Running it again changes nothing. For Antigravity,
-// which does not expand ${VAR}, the values come from the environment Apply
-// runs in.
+// Apply writes the MCP servers declared in the spec and Antigravity's
+// gateway, and removes the hooks it does not allow. Every other key,
+// including project trust and Codex's hooks.state, is kept. Running it again
+// changes nothing. For Antigravity, which does not expand ${VAR}, the values
+// come from the environment Apply runs in.
 func Apply(ctx context.Context, opts Options) (ApplyReport, error) {
 	opts, desired, err := prepare(ctx, opts)
 	if err != nil {

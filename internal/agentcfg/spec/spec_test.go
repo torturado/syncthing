@@ -42,6 +42,14 @@ func TestLoadRejectsInvalidSpecs(t *testing.T) {
 		"sync directive":                "[sync.exclude]\nagents = [\"#include other\"]\n",
 		"sync line break":               "[sync.exclude]\nagents = [\"/a\\n!/b\"]\n",
 		"sync blank pattern":            "[sync.exclude]\nagents = [\" \"]\n",
+		"gateway literal key":           "[antigravity.gateway]\nurl = \"https://gw.example.com\"\napi_key = \"abc\"\n",
+		"gateway key with default":      "[antigravity.gateway]\nurl = \"https://gw.example.com\"\napi_key = \"${KEY:-abc}\"\n",
+		"gateway without url":           "[antigravity.gateway]\napi_key = \"${KEY}\"\n",
+		"gateway url without scheme":    "[antigravity.gateway]\nurl = \"gw.example.com\"\napi_key = \"${KEY}\"\n",
+		"gateway wire protocol":         "[antigravity.gateway]\nurl = \"https://gw.example.com\"\napi_key = \"${KEY}\"\nwire_protocol = \"grpc\"\n",
+		"gateway model with comma":      "[antigravity.gateway]\nurl = \"https://gw.example.com\"\napi_key = \"${KEY}\"\nmodels = [\"a,b\"]\n",
+		"gateway model with quote":      "[antigravity.gateway]\nurl = \"https://gw.example.com\"\napi_key = \"${KEY}\"\nmodels = [\"a'b\"]\n",
+		"gateway in a host":             "[hosts.desktop.antigravity.gateway]\nurl = \"https://gw.example.com\"\napi_key = \"${KEY}\"\n",
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -53,7 +61,7 @@ func TestLoadRejectsInvalidSpecs(t *testing.T) {
 }
 
 func TestLoadAcceptsValidSpec(t *testing.T) {
-	err := load(t, "[mcp_servers.search]\nurl = \"https://example.com\"\n\n[mcp_servers.files]\ncommand = \"mcp-files\"\nagents = [\"claude\"]\n\n[hooks]\nclaude = [\"notify\"]\n\n[sync.exclude]\nagents = [\"/skills/local\", \"(?d)**/*.tmp\"]\n")
+	err := load(t, "[mcp_servers.search]\nurl = \"https://example.com\"\n\n[mcp_servers.files]\ncommand = \"mcp-files\"\nagents = [\"claude\"]\n\n[hooks]\nclaude = [\"notify\"]\n\n[sync.exclude]\nagents = [\"/skills/local\", \"(?d)**/*.tmp\"]\n\n[antigravity.gateway]\nurl = \"https://gw.example.com:8317\"\napi_key = \"${GATEWAY_KEY}\"\nwire_protocol = \"genai\"\nmodels = [\"gemini-4-neon\", \"claude-opus-5-5\"]\n")
 	if err != nil {
 		t.Fatal(err)
 	}

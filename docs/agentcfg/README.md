@@ -83,7 +83,20 @@ hooks = { claude = ["python3 ~/.claude/hooks/gpu-guard.py"] }
 
 [sync.exclude]                                # files that stay on each machine
 agents = ["/skills/local-only"]               # Syncthing ignore patterns, per synced folder
+
+[antigravity.gateway]                         # where Antigravity sends model requests
+url = "https://llm-gateway.example.ts.net"
+api_key = "${GATEWAY_API_KEY}"
+wire_protocol = "genai"                       # default; "openai" breaks agy acp
+models = ["gemini-4-neon", "claude-opus-5-5"] # the first is the default
 ```
+
+`[antigravity.gateway]`, like `[sync]`, applies to the whole fleet and has no role or host
+form. It sends the model requests of agy and its ACP server to an
+[enterprise gateway](https://docs.cloud.google.com/gemini/enterprise/docs/ai-developer-tools/connect-enterprise-gateway)
+instead of Google. `api_key` must be exactly `${VAR}`. Without `models`, agy lists the models
+the gateway offers, in the gateway's order, and picks the first; name them to fix the list and
+the default.
 
 A credential in the spec must be a reference such as `${NAME}`; the spec is rejected
 otherwise. For Codex, a header must be exactly `${VAR}` (written as `env_http_headers`) or
@@ -121,8 +134,9 @@ They can only exclude: a pattern that starts with `!`, or a `#include` directive
 | `undeclared-plugin` | error | A Claude Code plugin is enabled machine-wide but not in the spec. |
 | `unexpanded-variable` | error | A Claude Code settings `env` value, or an Antigravity MCP header or variable, references `${VAR}`, which the agent passes on as written. |
 | `literal-secret` | error | A credential header, token or variable is written in the file instead of referenced. For Antigravity, a credential other than the value `apply` writes from the spec. |
+| `gateway-mismatch` | error | The Antigravity gateway environment file is missing or differs from `[antigravity.gateway]`, or still holds a gateway the spec no longer declares. |
 | `shadowed-server` | warning | The same server is defined in several scopes. |
-| `unset-variable` | warning | A referenced variable is not set where the check ran, so the server may start unauthenticated, or, for Antigravity, `apply` cannot write it. |
+| `unset-variable` | warning | A referenced variable is not set where the check ran, so the server may start unauthenticated, or, for Antigravity, `apply` cannot write it or the gateway's API key. |
 
 Secret values are never read into the report: a field only records whether it is written in
 the file, which variables it references and a digest to compare it with the spec. URLs and hook
@@ -143,6 +157,7 @@ query values, the value after a credential name (`Authorization: …`, `api_key=
 | `~/.codex/hooks.json` | Hooks not in the spec are removed. |
 | `~/.gemini/config/mcp_config.json` | `mcpServers`, with every `${VAR}` replaced by its value (see below). Disabled servers the spec does not declare are kept. |
 | `~/.gemini/config/hooks.json` | Hooks not in the spec are removed; a hook with `"enabled": false` is kept. |
+| `~/.config/environment.d/agentcfg-antigravity.conf` | The whole file: the `AGY_LLM_GATEWAY_*` variables of `[antigravity.gateway]`, or none once the spec drops it. |
 
 A declared server enabled in `~/.mcp.json` is corrected there, and one enabled with the same
 target in managed settings is left there; neither is added to `~/.claude.json`, though an entry
@@ -159,6 +174,20 @@ Syncthing service is the systemd user environment that `agentcfg secrets sync` f
 declared server with a variable that is not set is left as it is, and `check` warns. The file
 is not synced, so the values stay on each machine; give it mode 0600 if it already exists, as
 `apply` keeps the mode of the files it rewrites.
+
+agy reads its gateway only from environment variables, or from
+`/etc/antigravity/admin_settings.json`, which needs root. So `apply` writes
+`AGY_LLM_GATEWAY_URL`, `_API_KEY` (the value of the variable `api_key` names, from the
+environment it runs in), `_WIRE_PROTOCOL` and `_MODELS` to an unsynced environment file, mode
+0600 when it creates it, and leaves it as it is while that variable is not set. The systemd
+user manager passes the file to the graphical session and its units after
+`systemctl --user daemon-reload` or the next login; already running programs, such as an
+editor or T3 Code with `agy acp` open, keep their environment until they restart. Shells
+started outside that session, such as over SSH, read it with:
+
+```sh
+set -a; . ~/.config/environment.d/agentcfg-antigravity.conf; set +a
+```
 
 Writes are atomic (temporary file and rename). A symlink is kept: the file it points to is
 written, with its mode. Before each run's first write the previous content is copied to
@@ -230,7 +259,7 @@ folders, err := agentcfg.SyncFolders(opts) // folders to sync and their ignore p
 |---|---|
 | Claude Code | `~/.claude/settings.json`, `~/.claude.json` (user and local MCP scopes only), `~/.mcp.json`, `/etc/claude-code/managed-settings.json`, `managed-settings.d/`, `managed-mcp.json`, and for each plugin enabled in those settings: `plugins/installed_plugins.json`, its `hooks/hooks.json`, `.mcp.json` and the hooks or servers its `plugin.json` adds. Honors `CLAUDE_CONFIG_DIR`. |
 | Codex CLI | `~/.codex/config.toml` (ignoring the `hooks.state` trust store), `~/.codex/hooks.json`, `/etc/codex/config.toml`. Honors `CODEX_HOME`. |
-| Antigravity | `~/.gemini/config/mcp_config.json`, `~/.gemini/config/hooks.json`, and for each plugin in `~/.gemini/config/plugins/` (a directory with a `plugin.json`): its `mcp_config.json`, whose servers are named `plugin:<plugin>:<server>`, and its `hooks.json`. Not workspace `.agents/` directories, nor the legacy per-product `mcp_config.json` files. |
+| Antigravity | `~/.gemini/config/mcp_config.json`, `~/.gemini/config/hooks.json`, `~/.config/environment.d/agentcfg-antigravity.conf`, and for each plugin in `~/.gemini/config/plugins/` (a directory with a `plugin.json`): its `mcp_config.json`, whose servers are named `plugin:<plugin>:<server>`, and its `hooks.json`. Not workspace `.agents/` directories, nor the legacy per-product `mcp_config.json` files. |
 
 ## Development
 

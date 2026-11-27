@@ -25,8 +25,9 @@ var ErrChanged = errors.New("changed while apply was running")
 // Write replaces path with data if it still holds before (nil: must not
 // exist). The previous content is copied into backupDir first. A symlink is
 // kept: the file it resolves to is written. It returns the backup path, empty
-// when the file did not exist.
-func Write(path string, before, data []byte, backupDir string) (string, error) {
+// when the file did not exist. A non-zero mode replaces the file's own; zero
+// keeps it, or gives a new file 0600.
+func Write(path string, before, data []byte, mode fs.FileMode, backupDir string) (string, error) {
 	target := path
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		target = resolved
@@ -43,14 +44,19 @@ func Write(path string, before, data []byte, backupDir string) (string, error) {
 		return "", fmt.Errorf("%s: %w", path, ErrChanged)
 	}
 
-	mode := fs.FileMode(0o600)
+	keep := mode == 0
+	if keep {
+		mode = 0o600
+	}
 	backup := ""
 	if exists {
 		info, err := os.Stat(target)
 		if err != nil {
 			return "", err
 		}
-		mode = info.Mode().Perm()
+		if keep {
+			mode = info.Mode().Perm()
+		}
 		if err := os.MkdirAll(backupDir, 0o700); err != nil {
 			return "", err
 		}

@@ -183,7 +183,7 @@ func Apply(ctx context.Context, opts Options) (ApplyReport, error) {
 
 func write(edits []model.FileEdit, runDir string, changes []FileChange) error {
 	for i, edit := range edits {
-		backup, err := files.Write(edit.Path, edit.Before, edit.After, runDir)
+		backup, err := files.Write(edit.Path, edit.Before, edit.After, edit.Mode, runDir)
 		if err != nil {
 			return err
 		}

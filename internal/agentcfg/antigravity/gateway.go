@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"runtime"
 	"slices"
 
 	"github.com/syncthing/syncthing/internal/agentcfg/check"
@@ -21,13 +22,16 @@ import (
 	"github.com/syncthing/syncthing/internal/agentcfg/spec"
 )
 
-const gatewayHeader = "# Written by agentcfg apply from [antigravity.gateway] in the spec. Do not edit or sync this file.\n"
+const (
+	gatewayHeader = "# Written by agentcfg apply from [antigravity.gateway] in the spec. Do not edit or sync this file.\n"
+	gatewayMode   = fs.FileMode(0o600)
+)
 
 // planGateway computes the gateway environment file. agy reads the gateway
 // only from AGY_LLM_GATEWAY_* variables (or a root-owned admin file), so
 // apply writes them, with the API key taken from lookup, into an unsynced
-// environment.d file. Without a gateway in the spec, an existing file is
-// emptied rather than left pointing at the old one. missing names the
+// environment.d file with mode 0600. Without a gateway in the spec, an
+// existing file is emptied rather than left pointing at the old one. missing names the
 // variable lookup has no value for; the file is then left as it is.
 func planGateway(path string, gateway *spec.Gateway, lookup func(string) (string, bool)) (edit *model.FileEdit, missing []string, err error) {
 	before, err := os.ReadFile(path)
@@ -59,10 +63,23 @@ func planGateway(path string, gateway *spec.Gateway, lookup func(string) (string
 	for _, name := range slices.Sorted(maps.Keys(env)) {
 		fmt.Fprintf(&after, "%s='%s'\n", name, env[name])
 	}
-	if bytes.Equal(before, after.Bytes()) {
-		return nil, nil, nil
+	// The file holds the key, so it must not be readable by others even if
+	// something else created it. Windows has no such mode bits.
+	wrongMode := false
+	if before != nil && runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		wrongMode = info.Mode().Perm() != gatewayMode
 	}
-	return &model.FileEdit{Path: path, Before: before, After: after.Bytes(), Changes: []string{change}}, nil, nil
+	if bytes.Equal(before, after.Bytes()) {
+		if !wrongMode {
+			return nil, nil, nil
+		}
+		change = "set the mode to 0600"
+	}
+	return &model.FileEdit{Path: path, Before: before, After: after.Bytes(), Mode: gatewayMode, Changes: []string{change}}, nil, nil
 }
 
 // GatewayFindings reports a gateway environment file that differs from
@@ -81,7 +98,7 @@ func GatewayFindings(home string, desired spec.Spec, inv model.Inventory, lookup
 		findings = append(findings, check.Finding{Severity: check.Warning, Agent: model.Antigravity, Rule: "unset-variable", Source: path, Location: "antigravity.gateway.api_key", Message: variable + " is not set in this environment, so apply cannot write the gateway"})
 	}
 	if edit != nil {
-		findings = append(findings, check.Finding{Severity: check.Error, Agent: model.Antigravity, Rule: "gateway-mismatch", Source: path, Location: "antigravity.gateway", Message: "the gateway environment differs from the spec"})
+		findings = append(findings, check.Finding{Severity: check.Error, Agent: model.Antigravity, Rule: "gateway-mismatch", Source: path, Location: "antigravity.gateway", Message: "the gateway environment differs from the spec, or its mode is not 0600"})
 	}
 	return findings, nil
 }

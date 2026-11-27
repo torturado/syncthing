@@ -418,6 +418,20 @@ models = ["gemini-4-neon", "claude-opus-5-5"]
 		t.Errorf("second apply changed %+v (%v)", again.Files, err)
 	}
 
+	// The file holds the key, so a mode that lets others read it is drift.
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(envFile, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		assertFindings(t, findings(t, opts), []string{"antigravity error gateway-mismatch antigravity.gateway"})
+		if _, err := agentcfg.Apply(context.Background(), opts); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Stat(envFile); err != nil || info.Mode().Perm() != 0o600 {
+			t.Errorf("environment file after apply: %v (%v); want mode 0600", info, err)
+		}
+	}
+
 	// Without the key's value, the file is left as it is.
 	os.Unsetenv("GATEWAY_KEY")
 	plan, err := agentcfg.Plan(context.Background(), opts)

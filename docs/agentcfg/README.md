@@ -134,7 +134,7 @@ They can only exclude: a pattern that starts with `!`, or a `#include` directive
 | `undeclared-plugin` | error | A Claude Code plugin is enabled machine-wide but not in the spec. |
 | `unexpanded-variable` | error | A Claude Code settings `env` value, or an Antigravity MCP header or variable, references `${VAR}`, which the agent passes on as written. |
 | `literal-secret` | error | A credential header, token or variable is written in the file instead of referenced. For Antigravity, a credential other than the value `apply` writes from the spec. |
-| `gateway-mismatch` | error | The Antigravity gateway environment file is missing or differs from `[antigravity.gateway]`, or still holds a gateway the spec no longer declares. |
+| `gateway-mismatch` | error | The Antigravity gateway environment file is missing, differs from `[antigravity.gateway]`, still holds a gateway the spec no longer declares, or has a mode other than 0600. |
 | `shadowed-server` | warning | The same server is defined in several scopes. |
 | `unset-variable` | warning | A referenced variable is not set where the check ran, so the server may start unauthenticated, or, for Antigravity, `apply` cannot write it or the gateway's API key. |
 
@@ -178,12 +178,13 @@ is not synced, so the values stay on each machine; give it mode 0600 if it alrea
 agy reads its gateway only from environment variables, or from
 `/etc/antigravity/admin_settings.json`, which needs root. So `apply` writes
 `AGY_LLM_GATEWAY_URL`, `_API_KEY` (the value of the variable `api_key` names, from the
-environment it runs in), `_WIRE_PROTOCOL` and `_MODELS` to an unsynced environment file, mode
-0600 when it creates it, and leaves it as it is while that variable is not set. The systemd
-user manager passes the file to the graphical session and its units after
-`systemctl --user daemon-reload` or the next login; already running programs, such as an
-editor or T3 Code with `agy acp` open, keep their environment until they restart. Shells
-started outside that session, such as over SSH, read it with:
+environment it runs in), `_WIRE_PROTOCOL` and `_MODELS` to an unsynced environment file with mode 0600, and leaves it
+as it is while that variable is not set. The systemd user manager reads the file at login and
+on `systemctl --user daemon-reload`, so user units started afterwards get it. Programs started
+from the desktop, such as an editor or T3 Code running `agy acp`, inherit their launcher's
+environment instead, which has the file only when the session takes its environment from the
+user manager, as sessions started through systemd (for example with uwsm) do at login. Shells,
+including ones opened before then or over SSH, read it with:
 
 ```sh
 set -a; . ~/.config/environment.d/agentcfg-antigravity.conf; set +a

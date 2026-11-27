@@ -54,7 +54,9 @@ matches this machine add to it, in that order: a server replaces one with the sa
 hooks and plugins accumulate. A host matches by hostname (with or without domain) or tailnet
 name, so unifying the fleet does not erase what one machine needs on its own. Once the spec has
 `[hosts]` entries, a machine that matches none is refused instead of checked against the base
-alone, which would make `apply` remove what that machine adds.
+alone, which would make `apply` remove what that machine adds. A server in a role or host
+must leave Codex out of its `agents`: `~/.codex/config.toml` is synced, so the machines that
+declare it would add it and the others remove it again, and the spec is rejected.
 
 ```toml
 [mcp_servers.search]
@@ -74,7 +76,7 @@ claude = ["formatter@official"]               # allowed Claude Code plugins
 antigravity = ["notify"]                      # allowed Antigravity plugins, by directory
 
 [roles.build]
-mcp_servers.registry = { url = "https://registry.example.ts.net/mcp" }
+mcp_servers.registry = { url = "https://registry.example.ts.net/mcp", agents = ["claude"] }
 
 [hosts.gpu-box]
 roles = ["build"]

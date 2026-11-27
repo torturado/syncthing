@@ -244,6 +244,12 @@ func (layer Layer) validate(prefix, path string) error {
 			}
 		}
 		if server.AppliesTo(model.Codex) {
+			// Codex keeps its servers in ~/.codex/config.toml, which is synced,
+			// so a server only some machines declare would be added by them
+			// and removed by the rest, forever.
+			if prefix != "" {
+				return fmt.Errorf("%s reaches Codex, whose config.toml is the same on every machine; declare it at the top level or leave codex out of its agents", where)
+			}
 			if _, err := CodexServer(server); err != nil {
 				return fmt.Errorf("%s: %w", where, err)
 			}

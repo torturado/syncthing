@@ -272,6 +272,29 @@ changed since 2.1.5, so the packaged binary can take the database back.
     - every service restarted once, with no restart or panic since;
     - desktop's fleet view shows the six reports, 0 errors, 0 warnings and no apply error;
     - the four folders are at 100 % on the five peers of desktop, with no new conflict copies.
+- **Antigravity gateway, 2026-11-27:** desktop runs the branch of torturado/syncthing-agents#22
+  at `fa3cbcd9f` (`v2.1.8-dev.43`), with the `agentcfg` CLI from the same commit; `.prev` holds
+  `v2.1.8-dev.41`. The spec does not declare `[antigravity.gateway]` yet: the builds on the
+  other five reject the key, so it waits until all six run this build.
+  - The fleet's model proxy serves the Gemini models of its Antigravity login only with an
+    effort suffix (`gemini-4-argon-high`), while agy asks for the base name and sends the effort
+    apart. The proxy's `oauth.model-alias.antigravity` now also exposes `gemini-3.8-flash`,
+    `gemini-4-argon`, `gemini-4-neon`, `gemini-4-carbon` and `gemini-4-hydrogen`.
+  - Before the restart, a dry-run `agentcfg apply` with the current spec changed nothing.
+  - Checks passed:
+    - `agentcfg apply --write` with a copy of the spec plus the gateway wrote
+      `~/.config/environment.d/agentcfg-antigravity.conf` with mode 0600, and the service,
+      which still uses the spec without it, emptied the file within 6 s;
+    - with only that file's variables, `agy -p` ran a shell command through the proxy with the
+      default model (`gemini-4-neon`), `gemini-4-hydrogen`, `claude-fable-5-2` and
+      `gpt-6.2-sol`, and `agy acp` listed the twelve models of the spec and ran one with the
+      default;
+    - with the `genai` protocol and no `models`, Claude models fail on their first tool call
+      (`tool_use.id: Field required` from the proxy), so the spec names the models.
+  - Seen during the rollout, and not caused by it: the host layer's `editor-bim` server goes
+    into `~/.codex/config.toml`, which is synced, so desktop adds it and the other machines
+    remove it again about every 25 s.
+  - Pending: the other five machines, then the gateway in the spec.
 
 ## Rules for keeping the fork cheap
 

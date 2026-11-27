@@ -321,7 +321,8 @@ changed since 2.1.5, so the packaged binary can take the database back.
     the user manager has no `AGY_LLM_GATEWAY_*` variable; `agy -p` answered through Google.
   - `editor-bim` now lists only `claude` and `antigravity`. With laptop back online, desktop
     added it to `~/.codex/config.toml` and the other machines removed it about every 15 s. Once the spec changed, the file stayed unchanged for 100 s and no machine has the
-    server. `Load` now rejects a role or host server that reaches Codex.
+    server. `Load` now rejects a role or host server that reaches Codex or
+    replaces a top-level server Codex has.
 
 ## Rules for keeping the fork cheap
 

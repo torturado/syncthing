@@ -55,8 +55,9 @@ hooks and plugins accumulate. A host matches by hostname (with or without domain
 name, so unifying the fleet does not erase what one machine needs on its own. Once the spec has
 `[hosts]` entries, a machine that matches none is refused instead of checked against the base
 alone, which would make `apply` remove what that machine adds. A server in a role or host
-must leave Codex out of its `agents`: `~/.codex/config.toml` is synced, so the machines that
-declare it would add it and the others remove it again, and the spec is rejected.
+must leave Codex out of its `agents`, and may not replace a top-level server that Codex has:
+`~/.codex/config.toml` is synced, so the machines with the change would write it and the others
+undo it again. The spec is rejected otherwise.
 
 ```toml
 [mcp_servers.search]

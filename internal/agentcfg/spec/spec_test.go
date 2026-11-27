@@ -51,6 +51,7 @@ func TestLoadRejectsInvalidSpecs(t *testing.T) {
 		"gateway model with quote":      "[antigravity.gateway]\nurl = \"https://gw.example.com\"\napi_key = \"${KEY}\"\nmodels = [\"a'b\"]\n",
 		"gateway in a host":             "[hosts.desktop.antigravity.gateway]\nurl = \"https://gw.example.com\"\napi_key = \"${KEY}\"\n",
 		"host server for Codex":         "[hosts.desktop]\nmcp_servers.bim = { url = \"http://127.0.0.1:8741/mcp\" }\n",
+		"host replaces a Codex server":  "[mcp_servers.search]\nurl = \"https://example.com\"\n\n[hosts.desktop]\nmcp_servers.search = { url = \"https://example.com\", agents = [\"claude\"] }\n",
 		"role server for Codex":         "[roles.build]\nmcp_servers.registry = { url = \"https://registry.example.com/mcp\", agents = [\"codex\"] }\n",
 	}
 	for name, content := range cases {

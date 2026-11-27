@@ -312,6 +312,17 @@ changed since 2.1.5, so the packaged binary can take the database back.
     a change before the next login.
   - Pending: laptop, which was off. Until it runs this build, its `v2.1.8-dev.41` rejects the
     spec (`unknown keys [antigravity.gateway ...]`) and neither checks nor applies.
+- **Gateway off and Codex host servers, 2026-11-27:** the spec no longer declares
+  `[antigravity.gateway]` or sends `editor-bim` to Codex.
+  - The gateway is off because generating with Antigravity accounts from another client is
+    what Google warns can get an account flagged (pingdotgg/t3code#43026). The proxy no longer
+    holds those accounts or the Gemini aliases, and agy uses each machine's own Google sign-in.
+    Desktop's service emptied the environment file, and after `systemctl --user daemon-reload`
+    the user manager has no `AGY_LLM_GATEWAY_*` variable; `agy -p` answered through Google.
+  - `editor-bim` now lists only `claude` and `antigravity`. With laptop back online, desktop
+    added it to `~/.codex/config.toml` and the other machines removed it about every 15 s. Once the spec changed, the file stayed unchanged for 100 s and no machine has the
+    server. `Load` now rejects a role or host server that reaches Codex or
+    replaces a top-level server Codex has.
 
 ## Rules for keeping the fork cheap
 

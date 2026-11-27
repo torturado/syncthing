@@ -122,7 +122,7 @@ func Load(path string) (File, error) {
 	if undecoded := meta.Undecoded(); len(undecoded) > 0 {
 		return f, fmt.Errorf("%s: unknown keys %v", path, undecoded)
 	}
-	if err := f.Layer.validate("", path); err != nil {
+	if err := f.Layer.validate("", path, nil); err != nil {
 		return f, err
 	}
 	if err := f.Sync.validate(path); err != nil {
@@ -134,12 +134,12 @@ func Load(path string) (File, error) {
 		}
 	}
 	for name, role := range f.Roles {
-		if err := role.validate("roles."+name+".", path); err != nil {
+		if err := role.validate("roles."+name+".", path, f.MCPServers); err != nil {
 			return f, err
 		}
 	}
 	for name, host := range f.Hosts {
-		if err := host.Layer.validate("hosts."+name+".", path); err != nil {
+		if err := host.Layer.validate("hosts."+name+".", path, f.MCPServers); err != nil {
 			return f, err
 		}
 		for _, role := range host.Roles {
@@ -216,7 +216,9 @@ func (s Server) AppliesTo(agent model.Agent) bool {
 	return len(s.Agents) == 0 || slices.Contains(s.Agents, agent)
 }
 
-func (layer Layer) validate(prefix, path string) error {
+// validate checks one layer. shared holds the top-level servers when the
+// layer is a role or a host, and is nil for the top level itself.
+func (layer Layer) validate(prefix, path string, shared map[string]Server) error {
 	for name, server := range layer.MCPServers {
 		where := fmt.Sprintf("%s: %smcp_servers.%s", path, prefix, name)
 		if (server.URL == "") == (server.Command == "") {
@@ -243,7 +245,17 @@ func (layer Layer) validate(prefix, path string) error {
 				return err
 			}
 		}
+		// Codex keeps its servers in ~/.codex/config.toml, which is synced,
+		// so a server that differs between machines would be added by some
+		// and removed by the rest, forever. That includes a role or host
+		// server that replaces a top-level one Codex has.
+		if base, replaces := shared[name]; replaces && base.AppliesTo(model.Codex) {
+			return fmt.Errorf("%s replaces a top-level server that reaches Codex, whose config.toml is the same on every machine; give it another name", where)
+		}
 		if server.AppliesTo(model.Codex) {
+			if prefix != "" {
+				return fmt.Errorf("%s reaches Codex, whose config.toml is the same on every machine; declare it at the top level or leave codex out of its agents", where)
+			}
 			if _, err := CodexServer(server); err != nil {
 				return fmt.Errorf("%s: %w", where, err)
 			}

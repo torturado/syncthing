@@ -7,7 +7,7 @@ headers = { "X-API-Key" = "${SEARCH_API_KEY}" }
 claude = ["bash ~/.claude/hooks/notify.sh"]
 
 [roles.build]
-mcp_servers.registry = { url = "https://registry.example.ts.net/mcp", agents = ["codex"] }
+mcp_servers.registry = { url = "https://registry.example.ts.net/mcp", agents = ["claude"] }
 
 [hosts.gpu-box]
 roles = ["build"]

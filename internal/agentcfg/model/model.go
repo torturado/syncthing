@@ -12,6 +12,7 @@ package model
 
 import (
 	"crypto/sha256"
+	"io/fs"
 	"regexp"
 	"strings"
 )
@@ -171,7 +172,10 @@ type FileEdit struct {
 	Path string
 	// Before is the content the edit was computed from; nil when the file
 	// does not exist yet.
-	Before  []byte
-	After   []byte
+	Before []byte
+	After  []byte
+	// Mode, when non-zero, is the mode the file must have; zero keeps its
+	// own.
+	Mode    fs.FileMode
 	Changes []string
 }

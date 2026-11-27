@@ -5,8 +5,9 @@
 // You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Package spec loads the desired state: the MCP servers every machine must
-// have, the only hooks and plugins allowed to exist, the machines that may
-// decrypt the shared secrets, and what stays out of the synced folders.
+// have, the only hooks and plugins allowed to exist, the gateway Antigravity
+// sends its model requests to, the machines that may decrypt the shared
+// secrets, and what stays out of the synced folders.
 //
 // The top level of the file is the base layer. Roles and the entry for the
 // current host add to it, in that order, so a machine keeps its own servers
@@ -14,8 +15,10 @@
 package spec
 
 import (
+	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -24,6 +27,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/syncthing/syncthing/internal/agentcfg/model"
+	"github.com/syncthing/syncthing/internal/agentcfg/secrets"
 )
 
 type Server struct {
@@ -67,13 +71,35 @@ type Sync struct {
 	Exclude map[string][]string `toml:"exclude"`
 }
 
+// Antigravity is what only Antigravity is configured with. Like Sync, it
+// applies to the whole fleet.
+type Antigravity struct {
+	Gateway *Gateway `toml:"gateway"`
+}
+
+// Gateway sends Antigravity's model requests to an enterprise gateway
+// instead of Google. agy and its ACP server read it from AGY_LLM_GATEWAY_*
+// environment variables, which apply writes on each machine.
+type Gateway struct {
+	URL string `toml:"url"`
+	// APIKey is a ${VAR} reference: the spec is synced.
+	APIKey string `toml:"api_key"`
+	// WireProtocol is "genai", agy's default, or "openai". The ACP server,
+	// which editors and T3 Code run, supports only "genai".
+	WireProtocol string `toml:"wire_protocol"`
+	// Models are the models agy offers, the first one by default. Empty
+	// lets agy list them from the gateway.
+	Models []string `toml:"models"`
+}
+
 // File is the spec as written. Hosts are keyed by hostname or tailnet name.
 type File struct {
 	Layer
 
-	Roles map[string]Layer `toml:"roles"`
-	Hosts map[string]Host  `toml:"hosts"`
-	Sync  Sync             `toml:"sync"`
+	Roles       map[string]Layer `toml:"roles"`
+	Hosts       map[string]Host  `toml:"hosts"`
+	Sync        Sync             `toml:"sync"`
+	Antigravity Antigravity      `toml:"antigravity"`
 }
 
 // Spec is the desired state of one machine after merging its layers.
@@ -83,6 +109,8 @@ type Spec struct {
 	MCPServers map[string]Server
 	Hooks      map[model.Agent][]string
 	Plugins    map[model.Agent][]string
+	// Gateway is nil when Antigravity talks to Google directly.
+	Gateway *Gateway
 }
 
 func Load(path string) (File, error) {
@@ -99,6 +127,11 @@ func Load(path string) (File, error) {
 	}
 	if err := f.Sync.validate(path); err != nil {
 		return f, err
+	}
+	if gateway := f.Antigravity.Gateway; gateway != nil {
+		if err := gateway.validate(); err != nil {
+			return f, fmt.Errorf("%s: antigravity.gateway: %w", path, err)
+		}
 	}
 	for name, role := range f.Roles {
 		if err := role.validate("roles."+name+".", path); err != nil {
@@ -142,7 +175,7 @@ func (f File) Resolve(names []string) (Spec, error) {
 		return Spec{}, fmt.Errorf("no [hosts] entry matches this machine (%v); add one, or select it with --host", names)
 	}
 
-	s := Spec{MCPServers: map[string]Server{}, Hooks: map[model.Agent][]string{}, Plugins: map[model.Agent][]string{}}
+	s := Spec{MCPServers: map[string]Server{}, Hooks: map[model.Agent][]string{}, Plugins: map[model.Agent][]string{}, Gateway: f.Antigravity.Gateway}
 	s.add(f.Layer)
 	if len(matched) == 1 {
 		s.Host = matched[0]
@@ -261,6 +294,56 @@ func (s Sync) validate(path string) error {
 		}
 	}
 	return nil
+}
+
+// wholeRef is a value that is exactly one ${VAR} reference, without a default.
+var wholeRef = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
+
+func (g Gateway) validate() error {
+	parsed, err := url.Parse(g.URL)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return fmt.Errorf("url %q is not an http or https URL", g.URL)
+	}
+	if !wholeRef.MatchString(g.APIKey) {
+		return errors.New("api_key must be a reference such as ${NAME}: the spec is synced")
+	}
+	if g.WireProtocol != "" && g.WireProtocol != "genai" && g.WireProtocol != "openai" {
+		return fmt.Errorf("wire_protocol %q is neither genai nor openai", g.WireProtocol)
+	}
+	// The values end up in an environment file, which only takes values
+	// that systemd and POSIX shells read alike.
+	if err := secrets.ValidateValue("url", g.URL); err != nil {
+		return err
+	}
+	for _, name := range g.Models {
+		if err := secrets.ValidateValue("models", name); err != nil {
+			return err
+		}
+		if strings.Contains(name, ",") {
+			return fmt.Errorf("models: %q contains a comma, which separates the models agy reads", name)
+		}
+	}
+	return nil
+}
+
+// Environment returns the AGY_LLM_GATEWAY_* variables for the gateway, with
+// the API key that lookup returns for its reference. missing names the
+// variable when lookup has no value for it; the variables cannot be written
+// until it has.
+func (g Gateway) Environment(lookup func(string) (string, bool)) (env map[string]string, missing []string) {
+	variable := wholeRef.FindStringSubmatch(g.APIKey)[1]
+	key, ok := lookup(variable)
+	if !ok || key == "" {
+		return nil, []string{variable}
+	}
+	env = map[string]string{"AGY_LLM_GATEWAY_URL": g.URL, "AGY_LLM_GATEWAY_API_KEY": key}
+	if g.WireProtocol != "" {
+		env["AGY_LLM_GATEWAY_WIRE_PROTOCOL"] = g.WireProtocol
+	}
+	if len(g.Models) > 0 {
+		env["AGY_LLM_GATEWAY_MODELS"] = strings.Join(g.Models, ",")
+	}
+	return env, nil
 }
 
 // checkValue rejects a credential written into the spec itself.

@@ -49,16 +49,20 @@ type Paths struct {
 	MCPConfig string
 	Hooks     string
 	Plugins   string
+	// GatewayEnv is the environment.d file with the AGY_LLM_GATEWAY_*
+	// variables, which systemd passes to the user's session and units.
+	GatewayEnv string
 }
 
 func PathsFor(home string) Paths {
 	dir := filepath.Join(home, ".gemini")
 	config := filepath.Join(dir, "config")
 	return Paths{
-		Dir:       dir,
-		MCPConfig: filepath.Join(config, "mcp_config.json"),
-		Hooks:     filepath.Join(config, "hooks.json"),
-		Plugins:   filepath.Join(config, "plugins"),
+		Dir:        dir,
+		MCPConfig:  filepath.Join(config, "mcp_config.json"),
+		Hooks:      filepath.Join(config, "hooks.json"),
+		Plugins:    filepath.Join(config, "plugins"),
+		GatewayEnv: filepath.Join(home, ".config", "environment.d", "agentcfg-antigravity.conf"),
 	}
 }
 
@@ -71,10 +75,11 @@ func Installed(home string) bool {
 	})
 }
 
-// WatchPaths are the files whose changes can change the inventory.
+// WatchPaths are the files whose changes can change the inventory or the
+// gateway environment.
 func WatchPaths(home string) []string {
 	p := PathsFor(home)
-	return []string{p.MCPConfig, p.Hooks}
+	return []string{p.MCPConfig, p.Hooks, p.GatewayEnv}
 }
 
 type mcpServer struct {
